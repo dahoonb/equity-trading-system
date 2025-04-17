@@ -8,19 +8,19 @@ The system handles live market data, manages portfolio state (positions, cash), 
 
 ## Features
 
-* **Event-Driven Architecture:** Uses a central queue (`queue.Queue`) to decouple components (Data Handler, Strategy, Portfolio Manager, Execution Handler).
-* **IBKR TWS API Integration:** Connects to TWS or IB Gateway using the official `ibapi` library.
-* **Live Data Handling:** Subscribes to and processes 5-second real-time bars from IBKR. Includes contract qualification logic.
-* **Live Portfolio Management:** Tracks current holdings, average costs, cash balances (settled and total), and portfolio value (Net Liquidation Value). Includes basic T+N settlement simulation logic.
-* **Live Order Execution:** Converts strategy signals into market orders and places them via the TWS API. Supports basic bracket orders (MKT entry + STP stop-loss). Includes rate limiting.
-* **Strategy Framework:** Includes a base strategy class and example implementations:
+* Event-Driven Architecture: Uses a central queue (`queue.Queue`) to decouple components (Data Handler, Strategy, Portfolio Manager, Execution Handler).
+* IBKR TWS API Integration: Connects to TWS or IB Gateway using the official `ibapi` library.
+* Live Data Handling: Subscribes to and processes 5-second real-time bars from IBKR. Includes contract qualification logic.
+* Live Portfolio Management: Tracks current holdings, average costs, cash balances (settled and total), and portfolio value (Net Liquidation Value). Includes basic T+N settlement simulation logic.
+* Live Order Execution: Converts strategy signals into market orders and places them via the TWS API. Supports basic bracket orders (MKT entry + STP stop-loss). Includes rate limiting.
+* Strategy Framework: Includes a base strategy class and example implementations:
     * Moving Average Crossover (Momentum)
     * RSI Mean Reversion
     * Strategies calculate stop-loss levels based on ATR.
-* **Performance Tracking:** Records equity curve (high-frequency and daily) and individual trades. Calculates standard performance metrics (CAGR, Sharpe, Sortino, Max Drawdown, Win Rate, Profit Factor, etc.). Optionally calculates Alpha/Beta against a benchmark. Saves results to CSV.
-* **Backtesting Module:** Simulates the trading environment using historical OHLCV data from CSV files. Includes simulated execution (slippage, commission) and portfolio management.
-* **Configuration:** System parameters (connection details, account info, trading rules, strategy settings, logging) are managed via a central `config.yaml` file.
-* **Logging:** Implements rotating file logging and console logging using Python's `logging` module.
+* Performance Tracking: Records equity curve (high-frequency and daily) and individual trades. Calculates standard performance metrics (CAGR, Sharpe, Sortino, Max Drawdown, Win Rate, Profit Factor, etc.). Optionally calculates Alpha/Beta against a benchmark. Saves results to CSV.
+* Backtesting Module: Simulates the trading environment using historical OHLCV data from CSV files. Includes simulated execution (slippage, commission) and portfolio management.
+* Configuration: System parameters (connection details, account info, trading rules, strategy settings, logging) are managed via a central `config.yaml` file.
+* Logging: Implements rotating file logging and console logging using Python's `logging` module.
 
 ## Project Structure
 
