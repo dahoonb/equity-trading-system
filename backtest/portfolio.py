@@ -1,3 +1,4 @@
+# filename: backtest/portfolio.py
 # backtest/portfolio.py (Revised and Completed)
 import pandas as pd
 import datetime
@@ -186,6 +187,23 @@ class BacktestPortfolio:
         order_type = 'MKT' # Default to Market order for backtest simplicity
 
         if direction == 'LONG':
+            # Determine Order Type (Example based on strategy type or config)
+            use_limit_order = False # Replace with actual logic
+            calculated_limit_price = None
+            if use_limit_order:
+                # Calculate the desired limit price based on strategy rules
+                # Example: calculated_limit_price = current_price - 0.01
+                if calculated_limit_price is not None and calculated_limit_price > 0:
+                    order_type = 'LMT'
+                    limit_price = calculated_limit_price
+                else:
+                    logger.warning(f"Could not calculate valid LMT price for {symbol}, using MKT.")
+                    order_type = 'MKT'
+                    limit_price = None
+            else:
+                order_type = 'MKT'
+                limit_price = None
+            
             # Check if already long
             if self.holdings.get(symbol, {}).get('quantity', 0.0) > 1e-9:
                 # logger.debug(f"Already long {symbol}. Ignoring duplicate LONG signal.")
@@ -238,11 +256,14 @@ class BacktestPortfolio:
         # --- Generate Order Event ---
         if quantity > 0 and order_direction:
             order = OrderEvent(
-                timestamp=timestamp, # Use signal timestamp for order event time
+                timestamp=timestamp,
                 symbol=symbol,
-                order_type=order_type,
+                order_type=order_type, # Now can be 'LMT'
                 direction=order_direction,
-                quantity=quantity
+                quantity=quantity,
+                limit_price=limit_price, # Pass the calculated limit price
+                atr_value=signal.atr_value # Pass ATR from signal
+                # stop_price=... # Include stop if needed
             )
             # Stop price isn't needed on the OrderEvent itself if portfolio manages stops,
             # but passing it doesn't hurt if executor might use it (though unlikely in backtest).

@@ -1,3 +1,4 @@
+# filename: backtest/execution.py
 # backtest/execution.py (Revised and Completed)
 import queue
 import datetime
@@ -23,7 +24,10 @@ class SimulatedExecutionHandler:
     def __init__(self, event_q: queue.Queue,
                  commission_per_share: float = 0.005,
                  min_commission: float = 1.0,
-                 slippage_pct: float = 0.0005): # 0.05% default slippage
+                 slippage_pct: float = 0.0005,
+                 slippage_vol_factor: float = 0.1,
+                 slippage_base_pct: float = 0.0001,
+                 slippage_max_pct: float = 0.0050):
         """
         Initializes the SimulatedExecutionHandler.
 
@@ -50,17 +54,23 @@ class SimulatedExecutionHandler:
         self.commission_per_share = commission_per_share
         self.min_commission = min_commission
         self.slippage_pct = slippage_pct
-
+        self.slippage_vol_factor = slippage_vol_factor
+        self.slippage_base_pct = slippage_base_pct
+        self.slippage_max_pct = slippage_max_pct
+        
         # Stores the *next* bar's open price for fill simulation {symbol: open_price}
         self.next_bar_open_prices: Dict[str, Optional[float]] = {}
+        self.next_bar_high_prices: Dict[str, Optional[float]] = {} # ADDED
+        self.next_bar_low_prices: Dict[str, Optional[float]] = {}  # ADDED
 
         logger.info(f"SimulatedExecutionHandler initialized. Commission/Share: ${commission_per_share:.4f}, Min Comm: ${min_commission:.2f}, Slippage: {slippage_pct*100:.3f}%")
 
-    def update_next_bar_open(self, symbol: str, open_price: Optional[float]):
+    def update_next_bar_data(self, symbol: str, open_price: Optional[float], high_price: Optional[float], low_price: Optional[float]): # MODIFIED
         """
         Stores the open price of the *next* bar, received from the data handler
         before processing the current bar's events.
         """
+        # Store Open
         if open_price is not None and not math.isnan(open_price) and open_price > 0:
             self.next_bar_open_prices[symbol] = open_price
             # logger.debug(f"Executor updated next open for {symbol}: {open_price:.2f}")
@@ -69,6 +79,22 @@ class SimulatedExecutionHandler:
             if symbol in self.next_bar_open_prices:
                  del self.next_bar_open_prices[symbol]
             logger.warning(f"Received invalid next bar open price ({open_price}) for {symbol}. Fill may fail.")
+            
+        # Store High
+        if high_price is not None and not math.isnan(high_price) and high_price > 0:
+            self.next_bar_high_prices[symbol] = high_price
+        else:
+            if symbol in self.next_bar_high_prices:
+                 del self.next_bar_high_prices[symbol]
+            logger.warning(f"Received invalid next bar high price ({high_price}) for {symbol}. Fill may fail.")
+            
+        # Store Low
+        if low_price is not None and not math.isnan(low_price) and low_price > 0:
+            self.next_bar_low_prices[symbol] = low_price
+        else:
+            if symbol in self.next_bar_low_prices:
+                 del self.next_bar_low_prices[symbol]
+            logger.warning(f"Received invalid next bar low price ({low_price}) for {symbol}. Fill may fail.")
 
     def calculate_commission(self, quantity: float, fill_price: float) -> float:
         """Calculates simulated commission based on configured rates."""
@@ -76,20 +102,29 @@ class SimulatedExecutionHandler:
         comm = abs(quantity) * self.commission_per_share
         return max(comm, self.min_commission)
 
-    def _apply_slippage(self, price: float, direction: str) -> float:
+    def _apply_slippage(self, price: float, direction: str, atr_value: Optional[float]) -> float:
         """Applies simulated percentage slippage to the base fill price."""
         if price <= 0: return price # Cannot apply slippage to zero/negative price
-        slippage_multiplier = 0.0
+        effective_slippage_pct = self.slippage_base_pct # Start with base
+        # --- Volatility Adjustment ---
+        if atr_value is not None and atr_value > 0:
+            # Example: Slippage as fraction of ATR relative to price
+            vol_component = (self.slippage_vol_factor * atr_value) / price
+            effective_slippage_pct += vol_component
+            logger.debug(f"Volatility slippage component: {vol_component:.4%} (ATR: {atr_value:.3f})")
+
+        # Cap the slippage
+        effective_slippage_pct = min(effective_slippage_pct, self.slippage_max_pct)
+
+        # Apply the calculated slippage
+        slippage_multiplier = 1.0
         if direction == 'BUY':
-            slippage_multiplier = 1.0 + self.slippage_pct
+            slippage_multiplier = 1.0 + effective_slippage_pct
         elif direction == 'SELL':
-            slippage_multiplier = 1.0 - self.slippage_pct
-        else:
-            return price # No slippage for unknown directions
+            slippage_multiplier = 1.0 - effective_slippage_pct
 
         slipped_price = price * slippage_multiplier
-        # Ensure price doesn't go below zero due to large slippage on low-priced stocks
-        return max(0.01, slipped_price) # Minimum price of $0.01
+        return max(0.01, slipped_price)
 
     def process_order(self, order: OrderEvent, fill_timestamp: datetime.datetime):
         """
@@ -123,7 +158,7 @@ class SimulatedExecutionHandler:
             return
 
         # --- Apply Slippage ---
-        simulated_fill_price = self._apply_slippage(base_fill_price, order.direction)
+        simulated_fill_price = self._apply_slippage(base_fill_price, order.direction, order.atr_value)
         if simulated_fill_price <= 0:
              logger.error(f"Simulated fill price became zero or negative after slippage for {order_ref} (Base: {base_fill_price:.4f}). Order failed.")
              self.event_queue.put(OrderFailedEvent(fill_timestamp, None, symbol, 0, f"Fill price <= 0 after slippage"))
@@ -154,6 +189,77 @@ class SimulatedExecutionHandler:
             f"Slippage: {self.slippage_pct*100:.3f}%) Cost: {fill_cost:.2f}, Comm: {commission:.2f}"
         )
         self.event_queue.put(fill_event)
+
+        # Assume these are available for the 'fill_timestamp' bar
+        next_bar_open = self.next_bar_open_prices.get(symbol)
+        next_bar_high = self.next_bar_high_prices.get(symbol)
+        next_bar_low = self.next_bar_low_prices.get(symbol)
+        
+        if next_bar_open is None or next_bar_high is None or next_bar_low is None: # Check all
+            logger.warning(f"Missing next bar data (O/H/L) for {symbol}. Cannot simulate fill for {order_ref}.")
+            self.event_queue.put(OrderFailedEvent(fill_timestamp, None, symbol, 0, "Missing next bar data for fill"))
+            return
+
+        simulated_fill_price = None
+        fill_occurred = False
+
+        if order.order_type == 'MKT':
+            # --- Existing MKT order logic ---
+            base_fill_price = next_bar_open
+            simulated_fill_price = self._apply_slippage(base_fill_price, order.direction, order.atr_value)
+            fill_occurred = True
+            logger.debug(f"Simulating MKT fill for {order_ref} @ Open {base_fill_price:.2f}")
+
+        elif order.order_type == 'LMT':
+            if order.limit_price is None or order.limit_price <= 0:
+                logger.error(f"LMT order {order_ref} has invalid limit price ({order.limit_price}). Order failed.")
+                self.event_queue.put(OrderFailedEvent(fill_timestamp, None, symbol, 0, "Invalid LMT price"))
+                return
+
+            logger.debug(f"Simulating LMT check for {order_ref}: Limit={order.limit_price:.2f}, Next Bar O={next_bar_open:.2f} H={next_bar_high:.2f} L={next_bar_low:.2f}")
+
+            if order.direction == 'BUY':
+                # Condition: Next bar's low must be at or below the limit price
+                if next_bar_low <= order.limit_price:
+                    # Fill Price: Better of Open or Limit (cannot be worse than limit)
+                    base_fill_price = min(next_bar_open, order.limit_price)
+                    simulated_fill_price = self._apply_slippage(base_fill_price, order.direction, order.atr_value)
+                    fill_occurred = True
+                    logger.debug(f"Simulating BUY LMT fill for {order_ref} @ {base_fill_price:.2f} (slipped: {simulated_fill_price:.2f})")
+                else:
+                    logger.debug(f"BUY LMT {order_ref} condition not met (Low {next_bar_low:.2f} > Limit {order.limit_price:.2f}). No fill.")
+
+            elif order.direction == 'SELL':
+                # Condition: Next bar's high must be at or above the limit price
+                if next_bar_high >= order.limit_price:
+                    # Fill Price: Better of Open or Limit (cannot be worse than limit)
+                    base_fill_price = max(next_bar_open, order.limit_price)
+                    simulated_fill_price = self._apply_slippage(base_fill_price, order.direction, order.atr_value)
+                    fill_occurred = True
+                    logger.debug(f"Simulating SELL LMT fill for {order_ref} @ {base_fill_price:.2f} (slipped: {simulated_fill_price:.2f})")
+                else:
+                    logger.debug(f"SELL LMT {order_ref} condition not met (High {next_bar_high:.2f} < Limit {order.limit_price:.2f}). No fill.")
+
+        else:
+            logger.error(f"Unsupported order type '{order.order_type}' in process_order for {order_ref}. Order failed.")
+            self.event_queue.put(OrderFailedEvent(fill_timestamp, None, symbol, 0, f"Unsupported order type: {order.order_type}"))
+            return
+
+
+        # --- Generate FillEvent or OrderFailedEvent ---
+        if fill_occurred and simulated_fill_price is not None and simulated_fill_price > 0:
+            # --- Calculate Costs ---
+            fill_cost = order.quantity * simulated_fill_price
+            commission = self.calculate_commission(order.quantity, simulated_fill_price)
+            # --- Create Fill Event ---
+            fill_event = FillEvent(...) # Create as before using simulated_fill_price
+            self.event_queue.put(fill_event)
+        elif fill_occurred: # Fill occurred but price was invalid after slippage
+            logger.error(f"Simulated fill price became zero or negative after slippage for {order_ref}. Order failed.")
+            self.event_queue.put(OrderFailedEvent(fill_timestamp, None, symbol, 0, f"Fill price <= 0 after slippage"))
+        else: # Fill condition not met for LMT order
+            # Decide: Treat as failed or implicitly keep open? For simplicity, fail it here.
+            self.event_queue.put(OrderFailedEvent(fill_timestamp, None, symbol, order.quantity, f"LMT condition not met on next bar"))
 
         # Optional: Clear the price used for this fill?
         # If the main loop ensures update_next_bar_open is called *before*

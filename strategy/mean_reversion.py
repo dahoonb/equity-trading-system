@@ -1,11 +1,12 @@
-# strategy/mean_reversion.py (Revised and Completed)
+# filename: strategy/mean_reversion.py
+# strategy/mean_reversion.py (Modified for Solution C - Passing ATR in SignalEvent)
 import queue
 import pandas as pd
 import numpy as np # Still needed for NaN checks and array operations
 import talib # Still needed for RSI calculation
 import math # Still needed for isnan checks
 import logging
-from typing import Optional # For type hinting if needed
+from typing import Optional, Tuple # Import Tuple if type hinting _calculate_stop return
 
 # Import base class and event types
 from strategy.base import BaseStrategy
@@ -22,6 +23,7 @@ class RsiMeanReversionStrategy(BaseStrategy):
     Generates an EXIT signal for existing long positions when the RSI crosses
     above an exit threshold.
     Stop-loss is calculated using ATR via the BaseStrategy.
+    ATR value is included in the LONG SignalEvent for volatility scaling.
     """
     def __init__(self, symbols: list, event_q: queue.Queue,
                  rsi_period: int = 14, oversold_threshold: int = 30,
@@ -60,11 +62,12 @@ class RsiMeanReversionStrategy(BaseStrategy):
             f"Fallback Stop: {self.fallback_stop_pct*100:.1f}%)"
         )
 
-    # The _calculate_stop method is inherited from BaseStrategy
+    # The _calculate_stop method is inherited from BaseStrategy and now returns (stop, atr)
 
     def calculate_signals(self, event: MarketEvent):
         """
         Calculates RSI and generates LONG/EXIT signals based on threshold crosses.
+        Includes ATR value in LONG signals.
         """
         symbol = event.symbol
         data_df = self.symbol_data.get(symbol)
@@ -88,7 +91,6 @@ class RsiMeanReversionStrategy(BaseStrategy):
             rsi = talib.RSI(closes, timeperiod=self.rsi_period)
 
             # Check if we have enough non-NaN values for comparison (need current and previous)
-            # RSI typically has NaNs at the beginning equal to the period
             if len(rsi) < self.rsi_period + 1 or np.isnan(rsi[-1]) or np.isnan(rsi[-2]):
                  # logger.debug(f"RSI calculation resulted in insufficient non-NaN values for {symbol}. Length: {len(rsi)}")
                  return # Skip if RSI is NaN or not enough history
@@ -103,43 +105,51 @@ class RsiMeanReversionStrategy(BaseStrategy):
             # --- Signal Logic ---
 
             # Entry Signal: RSI crosses below oversold threshold
-            # Check if previous RSI was AT or ABOVE threshold and current is BELOW
             if prev_rsi >= self.oversold_threshold and latest_rsi < self.oversold_threshold:
-                # Enter LONG only if currently flat or short (though shorting isn't handled here)
+                # Enter LONG only if currently flat
                 if current_position <= 1e-9: # Check if not already long
                     logger.info(f"MEAN REVERSION [{symbol}]: RSI crossed below {self.oversold_threshold} "
                                 f"(Prev: {prev_rsi:.1f}, Curr: {latest_rsi:.1f}). Entering long @ ~{entry_price_ref:.2f}.")
 
-                    # Calculate stop loss using the inherited method
-                    stop_price = self._calculate_stop(symbol, entry_price_ref)
+                    # --- MODIFICATION: Capture both stop and ATR ---
+                    # Call the modified _calculate_stop which returns (stop_price, atr_value)
+                    stop_price, atr_value = self._calculate_stop(symbol, entry_price_ref)
+                    # --- END MODIFICATION ---
 
                     # Ensure stop price is valid (not None and below entry)
                     if stop_price is not None and stop_price < entry_price_ref:
+                        # --- MODIFICATION: Pass atr_value to SignalEvent ---
                         signal = SignalEvent(
                             timestamp=event.timestamp,
                             symbol=symbol,
                             direction='LONG',
                             stop_price=stop_price,
-                            entry_price=entry_price_ref # Pass reference price
+                            entry_price=entry_price_ref, # Pass reference price
+                            atr_value=atr_value # Include the calculated ATR
                         )
+                        # --- END MODIFICATION ---
                         self.event_queue.put(signal)
-                        logger.info(f"Generated LONG signal for {symbol} with stop at {stop_price:.2f}")
+                        # --- MODIFICATION: Log ATR value ---
+                        logger.info(f"Generated LONG signal for {symbol} with stop at {stop_price:.2f} (ATR: {atr_value:.3f if atr_value is not None else 'N/A'})")
+                        # --- END MODIFICATION ---
                     else:
+                         # Log error if stop price is invalid (atr_value might be None here too)
                          logger.error(f"Invalid stop price ({stop_price}) calculated for LONG signal {symbol}. Signal aborted.")
                 # else: logger.debug(f"RSI oversold on {symbol}, but already long ({current_position}). No signal.")
 
             # Exit Signal: RSI crosses above exit threshold
-            # Check if previous RSI was AT or BELOW threshold and current is ABOVE
             elif prev_rsi <= self.exit_threshold and latest_rsi > self.exit_threshold:
                 # Exit LONG position if currently held
                 if current_position > 1e-9: # Check if currently long
                     logger.info(f"MEAN REVERSION [{symbol}]: RSI crossed above {self.exit_threshold} "
                                 f"(Prev: {prev_rsi:.1f}, Curr: {latest_rsi:.1f}). Exiting long position @ ~{entry_price_ref:.2f}.")
+                    # EXIT signals don't need ATR for volatility scaling
                     signal = SignalEvent(
                         timestamp=event.timestamp,
                         symbol=symbol,
                         direction='EXIT', # Signal to flatten the position
                         entry_price=entry_price_ref # Pass reference price
+                        # No stop_price or atr_value needed for EXIT
                     )
                     self.event_queue.put(signal)
                 # else: logger.debug(f"RSI exit threshold crossed on {symbol}, but not long ({current_position}). No signal.")

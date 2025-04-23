@@ -2,4 +2,7 @@ venv/
 __pycache__/
 logs/
 *.log
+*.csv
 secrets.yaml
+config.yaml
+Comprehensive Guide to TWS API (ibapi).txt

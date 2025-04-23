@@ -1,0 +1,821 @@
+Comprehensive Guide to the Interactive Brokers TWS API (ibapi)
+1. Introduction
+The Interactive Brokers Trader Workstation (TWS) Application Programming Interface (API) allows traders, developers, and institutions to build custom trading applications, automate strategies, and integrate IBKR's trading functionalities into their own systems using Python. This guide provides a detailed overview of the TWS API for Python, covering its requirements, setup, architecture, core features, and best practices, based on the official documentation structure.
+1.1 Notes & Limitations
+While Interactive Brokers maintains a Python API, some features or related tools (like Excel integrations) might be Windows-specific.
+The API acts as an interface; most logic and validation occur in TWS/IB Gateway or IBKR servers. Familiarity with TWS is highly recommended.
+If a feature isn't available in TWS, it likely won't be available via the API.
+1.2 Requirements
+An Interactive Brokers account (live or paper trading). IBKR Pro is typically required.
+Trader Workstation (TWS) or IB Gateway (current Stable or Latest release) installed and running. Offline versions are recommended to avoid version conflicts due to auto-updates.
+The TWS API software (current Stable or Latest release) installed for Python.
+Python version 3.1 or greater.
+Network connectivity between your application and the machine running TWS/Gateway.
+Working knowledge of Python and Object-Oriented Programming (OOP).
+1.3 Paper Trading
+IBKR provides paper trading accounts that simulate live trading conditions without risking real capital. These accounts are invaluable for developing, testing, and debugging API applications. API access is available for paper accounts, though they have inherent limitations compared to live accounts.
+2. Setup and Configuration
+Proper setup of TWS/IB Gateway and the Python API environment is essential.
+2.1 Download TWS or IB Gateway
+TWS: Feature-rich platform suitable for manual trading and API connections. Includes GUI, charts, analysis tools.
+IB Gateway: Lighter-weight alternative primarily for API connections, consuming fewer resources but lacking a full GUI. Recommended for headless or automated operations.
+Download from the Interactive Brokers website. Use the offline installer to manage updates manually and ensure version sync with the API.
+2.2 TWS/Gateway Settings for API Use
+Configure API settings within TWS/Gateway (Global Configuration -> API -> Settings):
+Enable ActiveX and Socket Clients: Allows external applications to connect.
+Socket Port: Define the network port (e.g., 7496 for live TWS, 7497 for paper TWS, 4001 for live Gateway, 4002 for paper Gateway). Ensure this port isn't blocked by firewalls. TWS and Gateway use different default ports.
+Trusted IPs: Specify allowed client IP addresses for security. Leaving blank usually allows localhost ('127.0.0.1'). For remote connections, add the client's IP. Subnets are not supported; list individual IPs if needed.
+Read-Only API: Optionally restrict the connection to data retrieval only. Ensure this is disabled if you need to place/modify orders.
+2.3 Best Practices for Configuration
+"Never Lock Trader Workstation" Setting: (Global Configuration -> Lock and Exit) Consider enabling this (if available for your region/setup) for unattended operation, being mindful of security. Note: IB Gateway typically doesn't lock due to inactivity. Consider "Auto restart" for daily resets.
+Memory Allocation: (Global Configuration -> General) Allocate sufficient memory (e.g., 4000MB) to TWS/Gateway, especially for large data volumes, depending on system resources.
+Daily & Weekly Reauthentication: Be aware of daily/weekly reauthentication requirements, which might need manual login or specific handling in automated systems (e.g., auto-restart settings).
+Order Precautions: (Global Configuration -> API -> Precautions) Review and potentially bypass specific warnings for API orders if you understand the risks (e.g., "Bypass Order Precautions for API orders"). Configure TWS size/value limits as a safety net.
+API Server Locator: Use appropriate server locator settings if needed. Account server location can impact maintenance times; contact IB support to request changes if necessary for live accounts. Paper accounts typically use US servers.
+Logging Level: (Global Configuration -> API -> Settings) Set to 'Detail' for comprehensive logging during development and troubleshooting. Enable "Create API message log file".
+2.4 Installing the TWS API Software (Python)
+Download: Get the "TWS API" zip file for Mac/Unix/Linux or the MSI installer for Windows from the official interactivebrokers.github.io site. Avoid unofficial sources like pip directly, as they might not be up-to-date or supported.
+Extract/Install:
+Windows: Run the MSI installer (installs to C:\TWS API\ by default).
+macOS/Linux: Unzip the archive (e.g., unzip twsapi_macunix.<version>.zip -d $HOME/).
+Install Python Package:
+Navigate to the Python client source directory in your terminal: cd {TWS API}/source/pythonclient (adjust path as needed, e.g., $HOME/IBJts/source/pythonclient on Linux/Mac).
+Run the setup script: python setup.py install (or python3 ...). Use sudo if necessary for permissions, or python -m pip install . if setuptools causes issues.
+Protobuf Upgrade (API 10.35.1+): If using versions requiring Protobuf, follow the specific file modification steps detailed in the IBKR documentation (modifying setup.py, client.py, decoder.py, and protobuf *_pb2.py files) before running python setup.py install. This involves adding protobuf to install requirements and correcting import paths within the library files.
+Confirm Installation: Use python -m pip show ibapi to check the installed version.
+3. API Architecture and Connectivity (Python)
+The Python TWS API uses a client/server model over TCP sockets.
+3.1 Architecture Overview
+Client (EClient): Your Python application initiates requests. It inherits from ibapi.client.EClient.
+Server (TWS/Gateway): Listens for connections and processes requests.
+Wrapper (EWrapper): Your Python application implements this interface (ibapi.wrapper.EWrapper) to handle incoming messages (responses, market data, errors) via callback methods.
+Communication: Primarily asynchronous. Requests are sent, and responses arrive via EWrapper callbacks.
+Reader Thread: The Python API's EClient handles the reader thread automatically upon connection. It reads incoming messages and puts them into a standard Python Queue.
+Message Loop: You must call the EClient.run() method to start the message processing loop. This loop retrieves messages from the queue and dispatches them to the appropriate EWrapper callbacks in your main thread or a dedicated processing thread. Blocking within callbacks can stall message processing.
+# Typical Python Structure
+from ibapi.client import EClient
+from ibapi.wrapper import EWrapper
+import threading
+import time
+
+class MyWrapper(EWrapper):
+    # --- Implement EWrapper callback methods here ---
+    def nextValidId(self, orderId: int):
+        print(f"Connection successful. Next valid Order ID: {orderId}")
+        # Store orderId or start making requests
+
+    def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=""):
+         print(f"Error. Id: {reqId}, Code: {errorCode}, Msg: {errorString}, Advanced Reject: {advancedOrderRejectJson}")
+
+    # ... other callbacks (tickPrice, orderStatus, historicalData, etc.)
+
+class MyApp(MyWrapper, EClient):
+    def __init__(self):
+        MyWrapper.__init__(self)
+        EClient.__init__(self, wrapper=self) # Pass the wrapper instance
+
+    def run_loop(self):
+        self.run() # Starts the message processing loop
+
+# --- Main Execution ---
+app = MyApp()
+# Connect: Use 7497 for Paper TWS, 7496 for Live TWS, 4002 for Paper Gateway, 4001 for Live Gateway
+app.connect("127.0.0.1", 7497, clientId=1)
+
+# Start the message loop in a separate thread
+api_thread = threading.Thread(target=app.run_loop, daemon=True)
+api_thread.start()
+
+time.sleep(2) # Allow time for connection and nextValidId callback
+
+# --- Start making API requests here ---
+# Example: app.reqAccountSummary(...)
+
+# Keep main thread alive or manage shutdown logic
+try:
+    while True:
+        time.sleep(1)
+except KeyboardInterrupt:
+    print("User interrupted.")
+    app.disconnect()
+
+
+3.2 Pacing Limitations
+IBKR imposes limits on request frequency to prevent server overload. The general limit is based on your account's Maximum Market Data Lines (default 100): Max Lines / 2 requests per second (default 50/sec).
+Specific requests like historical data (reqHistoricalData) have stricter limits (e.g., max 60 requests per 10 minutes). Small bar sizes (<=30s) have tighter limits (identical requests within 15s, >6 requests for same contract/exchange/ticktype within 2s). BID_ASK requests count double.
+Violating limits can lead to error messages (Code 420) or disconnections. Implement delays (e.g., time.sleep()) between paced requests.
+3.3 Establishing an API Connection
+Instantiate Wrapper & Client: Create a class inheriting from EWrapper and EClient, implementing necessary callbacks.
+Connect: Call app.connect(host, port, clientId).
+host: IP address of TWS/Gateway machine (e.g., '127.0.0.1').
+port: Socket port configured in TWS/Gateway.
+clientId: A unique integer (1-31) for this connection. Client ID 0 has special properties (can bind manual TWS orders). Use different IDs for simultaneous connections to the same TWS instance.
+Start Message Loop: Start app.run() in a separate thread.
+Handle Connection Status: The nextValidId callback signals a successful connection. Implement error to catch connection issues (e.g., code 502 if TWS isn't running/configured correctly, 326 if client ID is in use) and connectionClosed for disconnections.
+3.4 Remote Connections
+Connect to TWS/Gateway on another machine by:
+Using the remote machine's IP address in connect().
+Ensuring network paths/firewalls allow connection on the configured port.
+Configuring TWS/Gateway to accept connections from the client's IP (Trusted IPs setting).
+Unchecking "Allow connection from localhost only" in TWS/Gateway API settings.
+3.5 Multiple Connections
+Multiple client applications can connect to the same TWS/Gateway instance if each uses a unique clientId. TWS uses Client ID 0 internally.
+4. Account and Portfolio Data
+Access account balances, positions, P&L, and more.
+4.1 Account Summary
+Provides a summary similar to the TWS Account Summary window. Updates automatically every 3 minutes after the initial snapshot. Limited to 2 active subscriptions simultaneously.
+Requesting:
+from ibapi.account_summary_tags import AccountSummaryTags
+
+# Request specific tags for all accounts
+app.reqAccountSummary(reqId=9001, group="All", tags="NetLiquidation,TotalCashValue,BuyingPower")
+
+# Request all tags for a specific account group or 'All'
+app.reqAccountSummary(reqId=9002, group="All", tags=AccountSummaryTags.AllTags)
+
+
+reqId (int): Unique request identifier.
+group (str): "All" or a specific Advisor Account Group name.
+tags (str): Comma-separated list of tags (see AccountSummaryTags class or documentation) or AccountSummaryTags.AllTags.
+Receiving:
+# In your EWrapper implementation:
+def accountSummary(self, reqId: int, account: str, tag: str, value: str, currency: str):
+    print(f"AccountSummary. ReqId: {reqId}, Account: {account}, Tag: {tag}, Value: {value}, Currency: {currency}")
+
+def accountSummaryEnd(self, reqId: int):
+    print(f"AccountSummaryEnd. ReqId: {reqId}")
+
+
+Canceling:
+app.cancelAccountSummary(reqId=9001) # Use the original reqId
+
+
+4.2 Account Updates (Portfolio & Account Window Data)
+Provides real-time updates mirroring the TWS Account Window. Updates occur on position changes or every 3 minutes for other values. Only one account subscription active at a time per client ID; a new request cancels the previous one.
+Requesting:
+# Subscribe for account 'U123456'
+app.reqAccountUpdates(subscribe=True, acctCode="U123456")
+
+
+subscribe (bool): True to start, False to stop.
+acctCode (str): The specific account ID (e.g., "U123456").
+Receiving: Implement these EWrapper callbacks:
+from ibapi.contract import Contract
+from ibapi.utils import decimalMaxString, floatMaxString # Helper functions for printing max values
+from decimal import Decimal
+
+# In your EWrapper implementation:
+def updateAccountValue(self, key: str, val: str, currency: str, accountName: str):
+    # Handles key-value pairs like NetLiquidation, BuyingPower, etc.
+    # Check for key == 'AccountReady' and val == 'false' during server resets.
+    print(f"UpdateAccountValue. Key: {key}, Value: {val}, Currency: {currency}, AccountName: {accountName}")
+
+def updatePortfolio(self, contract: Contract, position: Decimal, marketPrice: float, marketValue: float, averageCost: float, unrealizedPNL: float, realizedPNL: float, accountName: str):
+    # Handles position updates
+    print(f"UpdatePortfolio. Symbol: {contract.symbol}, SecType: {contract.secType}, "
+          f"Exchange: {contract.exchange}, Position: {decimalMaxString(position)}, "
+          f"MarketPrice: {floatMaxString(marketPrice)}, MarketValue: {floatMaxString(marketValue)}, "
+          f"AverageCost: {floatMaxString(averageCost)}, UnrealizedPNL: {floatMaxString(unrealizedPNL)}, "
+          f"RealizedPNL: {floatMaxString(realizedPNL)}, AccountName: {accountName}")
+
+def updateAccountTime(self, timeStamp: str):
+    # Timestamp of the last account update from TWS
+    print(f"UpdateAccountTime. Time: {timeStamp}")
+
+def accountDownloadEnd(self, accountName: str):
+    # Signals that the initial account data transmission is complete
+    print(f"AccountDownloadEnd. Account: {accountName}")
+
+
+Canceling: Call reqAccountUpdates again with subscribe=False.
+app.reqAccountUpdates(subscribe=False, acctCode="U123456")
+
+
+4.3 Positions
+Provides a one-time snapshot of all positions across accessible accounts. For real-time updates, use reqAccountUpdates or reqPnLSingle. Not available for IBrokers/FAs with >50 subaccounts (use reqPositionsMulti instead).
+Requesting:
+app.reqPositions()
+
+
+Receiving: Implement these EWrapper callbacks:
+# In your EWrapper implementation:
+def position(self, account: str, contract: Contract, position: Decimal, avgCost: float):
+    print(f"Position. Account: {account}, Contract: {contract}, Position: {position}, Avg cost: {avgCost}")
+
+def positionEnd(self):
+    # Signals end of position transmission
+    print("PositionEnd.")
+
+
+Canceling:
+app.cancelPositions()
+
+
+4.4 Profit and Loss (P&L)
+Provides real-time P&L updates, mirroring the TWS Portfolio Window. Reset schedule depends on TWS settings.
+Requesting Account P&L:
+app.reqPnL(reqId=102, account="U123456", modelCode="")
+
+
+reqId (int): Unique request ID.
+account (str): Account ID or "All" (for non-IBroker/FA or those with <50 subs).
+modelCode (str): Optional model code for FAs.
+Receiving Account P&L:
+# In your EWrapper implementation:
+def pnl(self, reqId: int, dailyPnL: float, unrealizedPnL: float, realizedPnL: float):
+    # unrealizedPnL and realizedPnL are since inception
+    print(f"Daily PnL. ReqId: {reqId}, DailyPnL: {dailyPnL}, UnrealizedPnL: {unrealizedPnL}, RealizedPnL: {realizedPnL}")
+
+
+Canceling Account P&L:
+app.cancelPnL(reqId=102)
+
+
+Requesting Single Position P&L:
+# Request P&L for IBM (conId 8314) in account U123456
+app.reqPnLSingle(reqId=101, account="U123456", modelCode="", conId=8314)
+
+
+reqId (int): Unique request ID.
+account (str): Account ID.
+modelCode (str): Optional model code.
+conId (int): Contract ID of the specific position.
+Receiving Single P&L:
+# In your EWrapper implementation:
+def pnlSingle(self, reqId: int, pos: Decimal, dailyPnL: float, unrealizedPnL: float, realizedPnL: float, value: float):
+    # unrealizedPnL and realizedPnL are since inception
+    print(f"Daily PnL Single. ReqId: {reqId}, Position: {pos}, DailyPnL: {dailyPnL}, UnrealizedPnL: {unrealizedPnL}, RealizedPnL: {realizedPnL}, Value: {value}")
+
+
+Canceling Single P&L:
+app.cancelPnLSingle(reqId=101)
+
+
+4.5 Family Codes & Managed Accounts (Financial Advisors)
+Functions primarily for FAs.
+Family Codes: Find associated accounts within a family structure.
+Request: app.reqFamilyCodes()
+Receive: familyCodes(self, familyCodes: ListOfFamilyCode)
+Managed Accounts: Get list of accounts managed by the logged-in user. Automatically called on connection, can be requested manually.
+Request: app.reqManagedAccts()
+Receive: managedAccounts(self, accountsList: str)
+Positions by Model: Subscribe to position updates for specific models/accounts. More efficient than reqPositions for subsets.
+Request: app.reqPositionsMulti(requestId, account, modelCode)
+Receive: positionMulti(self, reqId, account, modelCode, contract, pos, avgCost) and positionMultiEnd(self, reqId)
+Cancel: app.cancelPositionsMulti(requestId)
+Account Updates by Model: Subscribe to account value updates for specific models/accounts.
+Request: app.reqAccountUpdatesMulti(requestId, account, modelCode, ledgerAndNLV)
+Receive: accountUpdateMulti(self, reqId, account, modelCode, key, value, currency) and accountUpdateMultiEnd(self, reqId)
+Cancel: app.cancelAccountUpdatesMulti(requestId)
+5. Contracts (Financial Instruments)
+The ibapi.contract.Contract object defines instruments.
+5.1 The Contract Object
+Key fields for defining a contract in Python:
+from ibapi.contract import Contract
+
+# Example: Apple Stock
+contract = Contract()
+contract.symbol = "AAPL"
+contract.secType = "STK"
+contract.currency = "USD"
+contract.exchange = "SMART"
+# contract.primaryExchange = "NASDAQ" # Optional, helps resolve ambiguity
+
+# Example: E-mini S&P 500 Future (ES) Dec 2025
+contract = Contract()
+contract.symbol = "ES"
+contract.secType = "FUT"
+contract.currency = "USD"
+contract.exchange = "CME"
+contract.lastTradeDateOrContractMonth = "202512" # Or specific last trading day "YYYYMMDD"
+contract.multiplier = "50"
+
+# Example: SPY Call Option, Dec 20, 2025 Strike 500
+contract = Contract()
+contract.symbol = "SPY"
+contract.secType = "OPT"
+contract.currency = "USD"
+contract.exchange = "SMART"
+contract.lastTradeDateOrContractMonth = "20251220"
+contract.strike = 500.0
+contract.right = "C" # 'C' for Call, 'P' for Put
+contract.multiplier = "100"
+
+
+Essential Fields: symbol, secType, currency, exchange.
+Derivatives: Need lastTradeDateOrContractMonth, strike, right, multiplier, tradingClass (sometimes).
+Ambiguity Resolution: primaryExchange, conId (IBKR's unique ID).
+5.2 Finding Contract Details
+Use reqContractDetails to resolve ambiguities or find exact specifications.
+Requesting:
+from ibapi.contract import Contract
+
+contract = Contract()
+contract.symbol = "AAPL"
+contract.secType = "STK"
+contract.currency = "USD"
+# Request details for AAPL stock
+app.reqContractDetails(reqId=10, contract=contract)
+
+# Request details for Bonds (Example)
+bond_contract = Contract()
+bond_contract.symbol = "IBM" # Placeholder, better to use CUSIP/ISIN if known
+bond_contract.secType = "BOND"
+# bond_contract.cusip = "YOUR_CUSIP" # Or secIdType='ISIN', secId='YOUR_ISIN'
+app.reqContractDetails(reqId=11, contract=bond_contract)
+
+
+reqId (int): Unique request ID.
+contract (Contract): Partially or fully defined contract object.
+Receiving:
+from ibapi.contract import ContractDetails
+
+# In your EWrapper implementation:
+def contractDetails(self, reqId: int, contractDetails: ContractDetails):
+    # For non-bonds
+    print(f"ContractDetails. ReqId: {reqId}")
+    print(f"  Symbol: {contractDetails.contract.symbol}")
+    print(f"  ConId: {contractDetails.contract.conId}")
+    print(f"  Long Name: {contractDetails.longName}")
+    print(f"  Market Name: {contractDetails.marketName}")
+    # ... access other fields in contractDetails ...
+
+def bondContractDetails(self, reqId: int, contractDetails: ContractDetails):
+    # For bonds
+    print(f"BondContractDetails. ReqId: {reqId}")
+    print(f"  Symbol: {contractDetails.contract.symbol}")
+    print(f"  ConId: {contractDetails.contract.conId}")
+    print(f"  Cusip: {contractDetails.cusip}")
+    # ... access other bond-specific fields ...
+
+def contractDetailsEnd(self, reqId: int):
+    print(f"ContractDetailsEnd. ReqId: {reqId}")
+
+
+5.3 Option Chains
+Use reqSecDefOptParams to efficiently retrieve option chain parameters (exchanges, expiries, strikes) without throttling issues associated with reqContractDetails for full chains.
+Requesting:
+# Request option chain parameters for IBM stock (conId 8314)
+app.reqSecDefOptParams(reqId=20, underlyingSymbol="IBM", futFopExchange="", underlyingSecType="STK", underlyingConId=8314)
+
+
+reqId (int): Unique request ID.
+underlyingSymbol (str): Symbol of the underlying.
+futFopExchange (str): Exchange ("" for all) or specific exchange (e.g., "CBOE").
+underlyingSecType (str): Security type of the underlying (e.g., "STK", "FUT").
+underlyingConId (int): Contract ID of the underlying.
+Receiving: Multiple callbacks may occur if multiple exchanges match.
+from typing import Set # Requires 'from typing import Set' at top of file
+
+# In your EWrapper implementation:
+def securityDefinitionOptionParameter(self, reqId: int, exchange: str, underlyingConId: int, tradingClass: str, multiplier: str, expirations: Set[str], strikes: Set[float]):
+    print(f"SecurityDefinitionOptionParameter. ReqId: {reqId}, Exchange: {exchange}, "
+          f"Underlying conId: {underlyingConId}, TradingClass: {tradingClass}, Multiplier: {multiplier}")
+    print(f"  Expirations: {expirations}")
+    print(f"  Strikes: {strikes}")
+
+def securityDefinitionOptionParameterEnd(self, reqId: int):
+    # Signals end of all parameters for this reqId
+    print(f"SecurityDefinitionOptionParameterEnd. ReqId: {reqId}")
+
+
+5.4 Symbol Search
+Search for stock contracts by symbol prefix or company name keyword. Limited to 1 request per second.
+Requesting:
+app.reqMatchingSymbols(reqId=30, pattern="Interactive") # Search by keyword
+app.reqMatchingSymbols(reqId=31, pattern="IBKR")      # Search by symbol prefix
+
+
+reqId (int): Unique request ID.
+pattern (str): Search string.
+Receiving:
+from ibapi.contract import ContractDescription
+from typing import List # Requires 'from typing import List' at top of file
+
+# In your EWrapper implementation:
+def symbolSamples(self, reqId: int, contractDescriptions: List[ContractDescription]):
+    print(f"Symbol Samples. Request Id: {reqId}")
+    for desc in contractDescriptions:
+        derivSecTypes = ", ".join(desc.derivativeSecTypes)
+        print(f"  Contract: conId={desc.contract.conId}, symbol={desc.contract.symbol}, "
+              f"secType={desc.contract.secType}, primExchange={desc.contract.primaryExchange}, "
+              f"currency={desc.contract.currency}, derivativeSecTypes=[{derivSecTypes}]")
+
+
+6. Market Data
+Access real-time, delayed, and historical data. Requires appropriate market data subscriptions via Account Management.
+6.1 Market Data Types
+Set the desired data type for the session using reqMarketDataType.
+Types:
+1: Live (Real-time streaming, requires subscriptions).
+2: Frozen (Last closing data if live unavailable, requires subscriptions).
+3: Delayed (15-20 min delay, depends on exchange rules, may not require subscription).
+4: Delayed Frozen (Last closing data if delayed unavailable).
+Requesting Type Change:
+app.reqMarketDataType(marketDataType=3) # Request delayed data
+
+
+marketDataType (int): 1, 2, 3, or 4.
+Receiving Confirmation:
+# In your EWrapper implementation:
+def marketDataType(self, reqId: TickerId, marketDataType: int):
+     # Confirms the type being used for the specified reqId (tickerId)
+     print(f"MarketDataType. ReqId: {reqId}, Type: {marketDataType}")
+
+
+6.2 Live Market Data (Top of Book / Watchlist Data)
+Provides aggregated snapshots several times per second (not tick-by-tick).
+Requesting:
+from ibapi.contract import Contract
+from ibapi.tag_value import TagValue
+
+contract = Contract()
+contract.symbol = "AAPL"
+contract.secType = "STK"
+contract.currency = "USD"
+contract.exchange = "SMART"
+
+# Request streaming data with default ticks + RT Volume (tick 48) + Shortable (tick 236)
+app.reqMktData(reqId=1001, contract=contract, genericTickList="233,236", snapshot=False, regulatorySnapshot=False, mktDataOptions=[])
+
+# Request snapshot data (requires subscription)
+# app.reqMktData(reqId=1002, contract=contract, genericTickList="", snapshot=True, regulatorySnapshot=False, mktDataOptions=[])
+
+# Request regulatory snapshot (incurs fee)
+# app.reqMktData(reqId=1003, contract=contract, genericTickList="", snapshot=False, regulatorySnapshot=True, mktDataOptions=[])
+
+
+reqId (int): Unique ticker ID for this request.
+contract (Contract): The instrument.
+genericTickList (str): Comma-separated string of additional Generic Tick IDs (see docs/Appendix for list, e.g., "100,101,104,106,233,236,258"). Leave "" for defaults. mdoff disables default ticks.
+snapshot (bool): True for a single snapshot (requires subscription), False for streaming.
+regulatorySnapshot (bool): True for a regulatory NBBO snapshot (US Stocks/Options, incurs fee), False otherwise.
+mktDataOptions (List[TagValue]): Reserved for internal use, pass [].
+Receiving: Implement relevant tick...() callbacks in EWrapper:
+from ibapi.ticktype import TickTypeEnum, TickType # For mapping tick types to names
+from ibapi.utils import decimalMaxString, floatMaxString, intMaxString
+from ibapi.common import TickAttrib, TickAttribLast, TickAttribBidAsk # Added TickAttrib types
+from decimal import Decimal
+
+# In your EWrapper implementation:
+def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
+    # Handles price updates (Bid, Ask, Last, Close, Open, High, Low, etc.)
+    print(f"TickPrice. TickerId: {reqId}, TickType: {TickTypeEnum.idx2name[tickType]}, Price: {floatMaxString(price)}, CanAutoExecute: {attrib.canAutoExecute}, PastLimit: {attrib.pastLimit}, PreOpen: {attrib.preOpen}")
+
+def tickSize(self, reqId: TickerId, tickType: TickType, size: Decimal):
+    # Handles size updates (Bid Size, Ask Size, Last Size, Volume, etc.)
+    print(f"TickSize. TickerId: {reqId}, TickType: {TickTypeEnum.idx2name[tickType]}, Size: {decimalMaxString(size)}")
+
+def tickString(self, reqId: TickerId, tickType: TickType, value: str):
+    # Handles string-based ticks (Last Timestamp, RT Volume, Dividends, News, Exchange codes)
+    print(f"TickString. TickerId: {reqId}, TickType: {TickTypeEnum.idx2name[tickType]}, Value: {value}")
+
+def tickGeneric(self, reqId: TickerId, tickType: TickType, value: float):
+    # Handles generic double value ticks (Volatility, Option stats, Shortable status, etc.)
+    print(f"TickGeneric. TickerId: {reqId}, TickType: {TickTypeEnum.idx2name[tickType]}, Value: {floatMaxString(value)}")
+
+def tickEFP(self, reqId: TickerId, tickType: TickType, basisPoints: float, formattedBasisPoints: str, totalDividends: float, holdDays: int, futureLastTradeDate: str, dividendImpact: float, dividendsToLastTradeDate: float):
+    # Handles Exchange for Physical (EFP) ticks
+    print(f"TickEFP. TickerId: {reqId}, TickType: {TickTypeEnum.idx2name[tickType]}, BasisPoints: {basisPoints}, FormattedBasisPoints: {formattedBasisPoints}, TotalDividends: {totalDividends}, HoldDays: {holdDays}, FutureLastTradeDate: {futureLastTradeDate}, DividendImpact: {dividendImpact}, DividendsToLastTradeDate: {dividendsToLastTradeDate}")
+
+def tickSnapshotEnd(self, reqId: int):
+    # Called 11 seconds after a snapshot request starts
+    print(f"TickSnapshotEnd. TickerId: {reqId}")
+
+# Callback for Option Greeks (requested via genericTickList="106" or part of default option data)
+def tickOptionComputation(self, reqId: TickerId, tickType: TickType, tickAttrib: int, impliedVol: float, delta: float, optPrice: float, pvDividend: float, gamma: float, vega: float, theta: float, undPrice: float):
+     print(f"TickOptionComputation. TickerId: {reqId}, TickType: {TickTypeEnum.idx2name[tickType]}, "
+           f"ImpliedVol: {floatMaxString(impliedVol)}, Delta: {floatMaxString(delta)}, OptionPrice: {floatMaxString(optPrice)}, "
+           f"pvDividend: {floatMaxString(pvDividend)}, Gamma: {floatMaxString(gamma)}, Vega: {floatMaxString(vega)}, "
+           f"Theta: {floatMaxString(theta)}, UnderlyingPrice: {floatMaxString(undPrice)}")
+
+# Callback for news ticks (requested via genericTickList="292:BRFG" etc.)
+def tickNews(self, tickerId: int, timeStamp: int, providerCode: str, articleId: str, headline: str, extraData: str):
+    print(f"TickNews. TickerId: {tickerId}, TimeStamp: {timeStamp}, ProviderCode: {providerCode}, ArticleId: {articleId}, Headline: {headline}, ExtraData: {extraData}")
+
+# Callback confirming parameters for the request
+def tickReqParams(self, tickerId:int, minTick:float, bboExchange:str, snapshotPermissions:int):
+    print(f"TickReqParams. TickerId: {tickerId}, MinTick: {floatMaxString(minTick)}, BboExchange: {bboExchange}, SnapshotPermissions: {intMaxString(snapshotPermissions)}")
+
+
+Canceling:
+app.cancelMktData(tickerId=1001) # Use the original reqId (tickerId)
+
+
+6.3 Tick-by-Tick Data
+Provides the highest resolution data (individual trades, bid/ask changes). Requires Level II data subscriptions for some instruments. Not available for options in real-time (use historical).
+Requesting:
+app.reqTickByTickData(reqId=19001, contract=contract, tickType="Last", numberOfTicks=0, ignoreSize=True)
+# tickType can be "Last", "AllLast", "BidAsk", "MidPoint"
+# numberOfTicks > 0 retrieves historical ticks first (max 1000)
+# ignoreSize=True omits updates with only size changes (for BidAsk)
+
+
+Receiving: Implement relevant tickByTick...() callbacks:
+# In your EWrapper implementation:
+def tickByTickAllLast(self, reqId: int, tickType: int, time: int, price: float, size: Decimal, tickAtrribLast: TickAttribLast, exchange: str, specialConditions: str):
+    # tickType 0="Last", 1="AllLast"
+    print(f"TickByTickAllLast. ReqId: {reqId}, TickType: {tickType}, Time: {time}, Price: {price}, Size: {size}, Exchange: {exchange}, Spec Cond: {specialConditions}, PastLimit: {tickAtrribLast.pastLimit}, Unreported: {tickAtrribLast.unreported}")
+
+def tickByTickBidAsk(self, reqId: int, time: int, bidPrice: float, askPrice: float, bidSize: Decimal, askSize: Decimal, tickAttribBidAsk: TickAttribBidAsk):
+    print(f"TickByTickBidAsk. ReqId: {reqId}, Time: {time}, BidPrice: {bidPrice}, AskPrice: {askPrice}, BidSize: {bidSize}, AskSize: {askSize}, BidPastLow: {tickAttribBidAsk.bidPastLow}, AskPastHigh: {tickAttribBidAsk.askPastHigh}")
+
+def tickByTickMidPoint(self, reqId: int, time: int, midPoint: float):
+    print(f"TickByTickMidPoint. ReqId: {reqId}, Time: {time}, MidPoint: {midPoint}")
+
+
+Canceling:
+app.cancelTickByTickData(requestId=19001)
+
+
+6.4 Real-Time Bars (5-Second Bars)
+Provides streaming 5-second OHLC bars. Subject to historical data pacing limits (60 requests / 10 min) and market data line limits.
+Requesting:
+app.reqRealTimeBars(tickerId=3001, contract=contract, barSize=5, whatToShow="TRADES", useRTH=True, realTimeBarsOptions=[])
+# barSize must be 5
+# whatToShow: "TRADES", "MIDPOINT", "BID", "ASK"
+# useRTH: True (1) for Regular Trading Hours only, False (0) for all hours
+# realTimeBarsOptions: Reserved, pass []
+
+
+Receiving:
+from ibapi.common import RealTimeBar # For type hinting if needed
+
+# In your EWrapper implementation:
+def realtimeBar(self, reqId: TickerId, time:int, open_: float, high: float, low: float, close: float, volume: Decimal, wap: Decimal, count: int):
+    print(f"RealTimeBar. TickerId: {reqId}, Time: {time}, Open: {open_}, High: {high}, Low: {low}, Close: {close}, Volume: {volume}, WAP: {wap}, Count: {count}")
+
+
+
+Canceling:
+app.cancelRealTimeBars(tickerId=3001)
+
+
+6.5 Historical Data Bars
+Retrieves historical OHLCV bars for various granularities and durations. Subject to strict pacing limits.
+Requesting:
+from ibapi.utils import get_query_time # Helper to format date/time
+
+queryTime = get_query_time() # Or format manually: "YYYYMMDD HH:MM:SS TMZ" or "" for current time
+
+app.reqHistoricalData(reqId=4001,
+                       contract=contract,
+                       endDateTime=queryTime, # Or "" for up to present
+                       durationStr="1 M",   # e.g., "30 S", "1 D", "1 W", "1 M", "1 Y"
+                       barSizeSetting="1 day", # e.g., "1 secs", "5 mins", "1 hour", "1 day"
+                       whatToShow="TRADES", # e.g., "TRADES", "MIDPOINT", "BID_ASK", "ADJUSTED_LAST", "HISTORICAL_VOLATILITY", "OPTION_IMPLIED_VOLATILITY", "SCHEDULE"
+                       useRTH=True,      # 1 for RTH only, 0 for all hours
+                       formatDate=1,     # 1 for yyyyMMdd HH:mm:ss, 2 for epoch seconds
+                       keepUpToDate=False, # True for streaming updates of unfinished bars
+                       chartOptions=[])   # Reserved, pass []
+
+
+Finding Earliest Data Point: Use reqHeadTimestamp before reqHistoricalData.
+app.reqHeadTimeStamp(reqId=4000, contract=contract, whatToShow="TRADES", useRTH=1, formatDate=1)
+# Receive via EWrapper.headTimestamp(reqId, headTimestamp)
+# Remember to cancel: app.cancelHeadTimeStamp(reqId=4000)
+
+
+Receiving:
+from ibapi.common import BarData # For type hinting if needed
+
+# In your EWrapper implementation:
+def historicalData(self, reqId: int, bar: BarData):
+     # Receives historical bars one by one
+     print(f"HistoricalData. ReqId: {reqId}, Date: {bar.date}, Open: {bar.open}, High: {bar.high}, Low: {bar.low}, Close: {bar.close}, Volume: {bar.volume}, Count: {bar.barCount}, WAP: {bar.wap}")
+
+def historicalDataUpdate(self, reqId: int, bar: BarData):
+     # Receives updates for the most recent bar if keepUpToDate=True
+     print(f"HistoricalDataUpdate. ReqId: {reqId}, BarData: {bar}")
+
+def historicalDataEnd(self, reqId: int, start: str, end: str):
+     # Signals end of initial batch transmission for this reqId
+     print(f"HistoricalDataEnd. ReqId: {reqId} from {start} to {end}")
+
+# Special callback for whatToShow='SCHEDULE'
+def historicalSchedule(self, reqId: int, startDateTime: str, endDateTime: str, timeZone: str, sessions: ListOfHistoricalSessions):
+     print(f"HistoricalSchedule. ReqId: {reqId}, Start: {startDateTime}, End: {endDateTime}, TimeZone: {timeZone}")
+     for session in sessions:
+         print(f"  Session Start: {session.startDateTime}, End: {session.endDateTime}, Ref Date: {session.refDate}")
+
+
+Pacing: Implement delays (e.g., time.sleep(11) after each reqHistoricalData) to avoid pacing violations (max 60 requests / 10 min).
+Canceling:
+app.cancelHistoricalData(reqId=4001)
+
+
+6.6 Market Depth (Level II / Order Book)
+Provides order book data. Can be aggregated across exchanges (SMART depth) or direct-routed.
+Requesting:
+app.reqMktDepth(tickerId=2001, contract=contract, numRows=10, isSmartDepth=True, mktDepthOptions=[])
+# numRows: Number of rows on each side (bid/ask)
+# isSmartDepth: True for aggregated SMART depth, False for direct routed
+# mktDepthOptions: Reserved, pass []
+
+
+Receiving:
+# In your EWrapper implementation:
+def updateMktDepth(self, reqId: TickerId, position: int, operation: int, side: int, price: float, size: Decimal):
+    # For non-SMART depth or when market maker info isn't included
+    # operation: 0=insert, 1=update, 2=delete
+    # side: 0=ask, 1=bid
+    print(f"UpdateMarketDepth. ReqId: {reqId}, Position: {position}, Operation: {operation}, Side: {side}, Price: {price}, Size: {size}")
+
+def updateMktDepthL2(self, reqId: TickerId, position: int, marketMaker: str, operation: int, side: int, price: float, size: Decimal, isSmartDepth: bool):
+    # Includes marketMaker name (or exchange if isSmartDepth=True)
+    print(f"UpdateMarketDepthL2. ReqId: {reqId}, Position: {position}, MarketMaker: {marketMaker}, Operation: {operation}, Side: {side}, Price: {price}, Size: {size}, isSmartDepth: {isSmartDepth}")
+
+
+Checking Available Exchanges:
+Request: app.reqMktDepthExchanges()
+Receive: mktDepthExchanges(self, depthMktDataDescriptions: ListOfDepthExchanges)
+Canceling:
+app.cancelMktDepth(tickerId=2001, isSmartDepth=True) # isSmartDepth must match request
+
+
+6.7 Market Scanners
+Finds contracts based on predefined criteria (e.g., top gainers, most active). Limited to 50 results per scan, 10 active scans per client.
+Requesting Parameters: Get available scanner criteria (instruments, locations, scan codes, filters).
+Request: app.reqScannerParameters()
+Receive: scannerParameters(self, xml: str) (XML string with parameters)
+Subscribing: Define criteria using ibapi.scanner.ScannerSubscription.
+from ibapi.scanner import ScannerSubscription
+from ibapi.tag_value import TagValue
+
+sub = ScannerSubscription()
+sub.instrument = "STK"
+sub.locationCode = "STK.US.MAJOR" # e.g., STK.US.MAJOR, STK.NASDAQ, FUT.ECBOT
+sub.scanCode = "TOP_PERC_GAIN"   # e.g., TOP_PERC_GAIN, MOST_ACTIVE, HIGH_OPT_VOLUME
+
+# Optional Filters (use codes from scannerParameters XML)
+filters = [
+    TagValue("volumeAbove", "100000"),
+    TagValue("marketCapBelow", "10000000000"), # Example: Market Cap < 10B
+    TagValue("priceAbove", "5")
+]
+
+app.reqScannerSubscription(reqId=7001, subscription=sub, scannerSubscriptionOptions=[], scannerSubscriptionFilterOptions=filters)
+# scannerSubscriptionOptions: Reserved, pass []
+# scannerSubscriptionFilterOptions: List of TagValue filters
+
+
+Receiving:
+from ibapi.contract import ContractDetails
+from ibapi.common import ScanData # For type hinting if needed
+
+# In your EWrapper implementation:
+def scannerData(self, reqId: int, rank: int, contractDetails: ContractDetails, distance: str, benchmark: str, projection: str, legsStr: str):
+    # Receives matching contracts one by one
+    print(f"ScannerData. ReqId: {reqId}, Rank: {rank}, Symbol: {contractDetails.contract.symbol}, SecType: {contractDetails.contract.secType}") #, ScanData(...))
+
+def scannerDataEnd(self, reqId: int):
+    print(f"ScannerDataEnd. ReqId: {reqId}")
+
+
+Canceling:
+app.cancelScannerSubscription(tickerId=7001)
+
+
+6.8 News
+Access news headlines and articles. Requires API-specific news subscriptions (e.g., BRFG, DJNL, BZ, FLY).
+Providers: Check subscribed providers.
+Request: app.reqNewsProviders()
+Receive: newsProviders(self, newsProviders: ListOfNewsProviders)
+Headlines (Real-time): Subscribe via reqMktData using generic tick 292 and provider code(s).
+# Subscribe to Briefing.com General news for IBM
+app.reqMktData(reqId=1101, contract=ibm_contract, genericTickList="mdoff,292:BRFG", snapshot=False, regulatorySnapshot=False, mktDataOptions=[])
+# Subscribe to Broadtape news for Benzinga
+news_contract = Contract()
+news_contract.symbol = "BZ:BZ_ALL" # Example for Benzinga broadtape
+news_contract.secType = "NEWS"
+news_contract.exchange = "BZ"
+app.reqMktData(reqId=1102, contract=news_contract, genericTickList="mdoff,292", snapshot=False, regulatorySnapshot=False, mktDataOptions=[])
+# Receive via EWrapper.tickNews(...) - see section 6.2
+
+
+Headlines (Historical): Request past headlines.
+Request: app.reqHistoricalNews(requestId, conId, providerCodes, startDateTime, endDateTime, totalResults, historicalNewsOptions=[])
+Receive: historicalNews(self, requestId, time, providerCode, articleId, headline) and historicalNewsEnd(self, requestId, hasMore)
+Article: Request the body of a specific article.
+Request: app.reqNewsArticle(requestId, providerCode, articleId, newsArticleOptions=[])
+Receive: newsArticle(self, requestId, articleType, articleText) (articleType 0=text/html, 1=binary/pdf)
+Bulletins: Subscribe to IBKR system messages.
+Request: app.reqNewsBulletins(allMessages=True) (True for current day's, False for new only)
+Receive: updateNewsBulletin(self, msgId, msgType, newsMessage, originExch)
+Cancel: app.cancelNewsBulletin() (Note: documentation says reqNewsBulletins(False) but cancelNewsBulletin exists)
+7. Order Management
+Place, modify, cancel orders, and monitor status/executions.
+7.1 The Order Object (ibapi.order.Order)
+Defines order parameters. Key fields:
+from ibapi.order import Order
+from decimal import Decimal # For totalQuantity
+
+order = Order()
+order.action = "BUY" # "BUY", "SELL", "SSHORT"
+order.orderType = "LMT" # "MKT", "LMT", "STP", "STP LMT", "TRAIL", "REL", etc.
+order.totalQuantity = Decimal("100") # Use Decimal for quantity
+order.lmtPrice = 150.50 # Limit price for LMT, STPLMT
+order.auxPrice = 145.00 # Stop price for STP, STPLMT; Trailing amount/percent for TRAIL
+order.tif = "GTC" # Time in Force: "DAY", "GTC", "IOC", "FOK", "GTD", "OPG", "DTC"
+order.orderId = app.nextValidOrderId # Set unique order ID (see 7.2)
+order.transmit = True # True to submit immediately, False to save in TWS
+# order.parentId = parentOrderId # For bracket/child orders
+# order.ocaGroup = "MyOCA1" # One-Cancels-All group name
+# order.ocaType = 1 # 1=Cancel others, 2=Reduce others proportionally (block), 3=Reduce others proportionally (no block)
+# order.account = "U123456" # Specify account if needed
+# order.faGroup = "MyGroupName" # For FA allocations
+# order.faMethod = "EqualQuantity" # For FA allocations
+# order.faPercentage = "..." # For FA allocations
+order.whatIf = False # Set to True to check margin/commission without placing
+
+
+7.2 Order Placement
+Get Next Order ID: The nextValidId(self, orderId: int) callback (in EWrapper) provides the starting ID upon connection. Store and increment this ID sequentially for each new order placed during the API session. Do not reuse IDs. You can request a new ID mid-session using app.reqIds(-1).
+Create Contract: Define the instrument.
+Create Order: Define order parameters, including the unique order.orderId.
+Place Order:
+# Assume contract and order objects are defined, and order.orderId is set
+app.placeOrder(order.orderId, contract, order)
+
+
+7.3 Order Status and Monitoring
+Track active orders and their status changes.
+Receiving Callbacks (Implement in EWrapper):
+from ibapi.order_state import OrderState
+
+def orderStatus(self, orderId: OrderId, status: str, filled: Decimal, remaining: Decimal, avgFillPrice: float, permId: int, parentId: int, lastFillPrice: float, clientId: int, whyHeld: str, mktCapPrice: float):
+    # Updates on order status changes (Submitted, Filled, Cancelled, etc.)
+    print(f"OrderStatus. Id: {orderId}, Status: {status}, Filled: {filled}, Remaining: {remaining}, AvgFillPrice: {avgFillPrice}, PermId: {permId}, ParentId: {parentId}, LastFillPrice: {lastFillPrice}, ClientId: {clientId}, WhyHeld: {whyHeld}, MktCapPrice: {mktCapPrice}")
+
+def openOrder(self, orderId: OrderId, contract: Contract, order: Order, orderState: OrderState):
+    # Provides details of active orders when requested or initially placed
+    # orderState contains commission, margin impact (if whatIf=True), status, etc.
+    print(f"OpenOrder. PermId: {order.permId}, ClientId: {order.clientId}, OrderId: {orderId}, Account: {order.account}, Symbol: {contract.symbol}, SecType: {contract.secType}, Exchange: {contract.exchange}, Action: {order.action}, OrderType: {order.orderType}, TotalQty: {order.totalQuantity}, CashQty: {order.cashQty}, LmtPrice: {order.lmtPrice}, AuxPrice: {order.auxPrice}, Status: {orderState.status}")
+    # For WhatIf orders, check orderState margin fields:
+    # print(f"  InitMarginBefore: {orderState.initMarginBefore}, MaintMarginBefore: {orderState.maintMarginBefore}")
+    # print(f"  InitMarginChange: {orderState.initMarginChange}, MaintMarginChange: {orderState.maintMarginChange}")
+    # print(f"  InitMarginAfter: {orderState.initMarginAfter}, MaintMarginAfter: {orderState.maintMarginAfter}")
+
+def openOrderEnd(self):
+    # Signals end of initial open order transmission after a request
+    print("OpenOrderEnd.")
+
+def orderBound(self, orderId: int, apiClientId: int, apiOrderId: int):
+     # Notifies mapping of manual TWS order (permId) to API orderId when bound by client 0
+     print(f"OrderBound. OrderId: {orderId}, ApiClientId: {apiClientId}, ApiOrderId: {apiOrderId}")
+
+
+
+Requesting Active Orders:
+app.reqOpenOrders(): Requests orders placed by this client ID during this session. For client ID 0, also binds manual TWS orders.
+app.reqAllOpenOrders(): Requests all open orders associated with the account, regardless of origin (TWS, other clients, API). Does not bind orders.
+app.reqAutoOpenOrders(autoBind=True): Subscribes client ID 0 to receive orders placed manually via TWS/Mobile, binding them automatically.
+7.4 Modifying Orders
+Call placeOrder again with the same order.orderId as the original order, but provide a modified Order object with the updated parameters (e.g., lmtPrice, totalQuantity, auxPrice). Only modify cancellable orders.
+7.5 Canceling Orders
+Specific Order:
+from ibapi.order_cancel import OrderCancel # Added import
+
+# Cancel order with id = my_order_id
+app.cancelOrder(orderId=my_order_id, orderCancel=OrderCancel()) # Pass OrderCancel object for optional manual cancel time/indicator
+
+
+All Orders:
+app.reqGlobalCancel() # Cancels ALL open orders for the connected user. Use with caution!
+
+
+7.6 Executions (Fills)
+Request details of past fills. By default, returns fills since midnight (TWS) or current day (Gateway). Adjust TWS Trade Log settings for longer history.
+Requesting:
+from ibapi.execution import ExecutionFilter
+
+# Request all executions for the day
+app.reqExecutions(reqId=10001, filter=ExecutionFilter())
+
+# Request executions matching a filter
+execFilter = ExecutionFilter()
+# execFilter.clientId = my_client_id
+# execFilter.acctCode = "U123456"
+# execFilter.time = "YYYYMMDD HH:MM:SS" # Executions reported after this time
+# execFilter.symbol = "AAPL"
+# execFilter.secType = "STK"
+# execFilter.exchange = "SMART"
+# execFilter.side = "BUY"
+# app.reqExecutions(reqId=10002, filter=execFilter)
+
+
+Receiving:
+from ibapi.execution import Execution
+from ibapi.commission_report import CommissionReport
+
+# In your EWrapper implementation:
+def execDetails(self, reqId: int, contract: Contract, execution: Execution):
+    # Provides details of a single fill (or part of a fill)
+    print(f"ExecDetails. ReqId: {reqId}, Symbol: {contract.symbol}, SecType: {contract.secType}, Currency: {contract.currency}, Execution: {execution}")
+
+def execDetailsEnd(self, reqId: int):
+    print(f"ExecDetailsEnd. ReqId: {reqId}")
+
+def commissionReport(self, commissionReport: CommissionReport):
+    # Provides commission details associated with an execution (linked by execId)
+    print(

@@ -1,3 +1,4 @@
+# filename: strategy/momentum.py
 # strategy/momentum.py (Revised and Completed)
 import queue
 import pandas as pd
@@ -61,35 +62,34 @@ class MovingAverageCrossoverStrategy(BaseStrategy):
     def calculate_signals(self, event: MarketEvent):
         """
         Calculates moving averages and generates LONG/EXIT signals based on crossovers.
+        MODIFIED FOR SOLUTION C: Passes ATR value used for stop calculation in the SignalEvent.
         """
         symbol = event.symbol
         data_df = self.symbol_data.get(symbol)
 
         # Ensure we have enough data for the longest window + 1 for comparison
         if data_df is None or len(data_df) < self.long_window + 1:
-            # logger.debug(f"Not enough data ({len(data_df) if data_df is not None else 0} < {self.long_window + 1}) for {symbol} MA calculation.")
+            # logger.debug(...) # Optional logging
             return
 
         try:
-            # Ensure 'close' column exists and is numeric
+            # --- Existing code for data checks and MA calculation ---
             if 'close' not in data_df.columns:
                  logger.error(f"Missing 'close' column for {symbol}.")
                  return
-            closes = data_df['close'].values # Use numpy array for talib
+            closes = data_df['close'].values
             if not np.issubdtype(closes.dtype, np.number):
                  logger.error(f"'close' column for {symbol} is not numeric.")
                  return
 
-            # Calculate SMAs using TA-Lib
             short_mavg = talib.SMA(closes, timeperiod=self.short_window)
             long_mavg = talib.SMA(closes, timeperiod=self.long_window)
 
-            # Check if we have enough non-NaN values for comparison (need current and previous)
             if len(short_mavg) < 2 or len(long_mavg) < 2 or \
                np.isnan(short_mavg[-1]) or np.isnan(long_mavg[-1]) or \
                np.isnan(short_mavg[-2]) or np.isnan(long_mavg[-2]):
-                # logger.debug(f"SMA calculation resulted in insufficient non-NaN values for {symbol}.")
-                return # Skip if MAs are NaN or not enough history
+                # logger.debug(...) # Optional logging
+                return
 
             latest_short = short_mavg[-1]
             latest_long = long_mavg[-1]
@@ -97,57 +97,62 @@ class MovingAverageCrossoverStrategy(BaseStrategy):
             prev_long = long_mavg[-2]
 
             current_position = self.positions.get(symbol, 0.0)
-            # Use the close price of the bar that triggered the event as reference
             entry_price_ref = closes[-1]
 
             # --- Signal Logic ---
 
             # Bullish Crossover: Short MA crosses above Long MA
             if prev_short <= prev_long and latest_short > latest_long:
-                # Enter LONG only if currently flat or short (though shorting isn't handled here)
-                if current_position <= 1e-9: # Check if not already long (allow for float inaccuracy)
+                if current_position <= 1e-9: # Check if not already long
                     logger.info(f"MOMENTUM [{symbol}]: Bullish Crossover detected. "
                                 f"Short MA({self.short_window})={latest_short:.2f}, Long MA({self.long_window})={latest_long:.2f}. "
                                 f"Ref Price: {entry_price_ref:.2f}")
 
-                    # Calculate stop loss using the inherited method
-                    stop_price = self._calculate_stop(symbol, entry_price_ref)
+                    # --- MODIFICATION: Capture stop AND ATR ---
+                    # Call the modified _calculate_stop which returns (stop_price, atr_value)
+                    stop_price, atr_value = self._calculate_stop(symbol, entry_price_ref)
+                    # --- END MODIFICATION ---
 
                     # Ensure stop price is valid (not None and below entry)
                     if stop_price is not None and stop_price < entry_price_ref:
+                        # --- MODIFICATION: Add atr_value to SignalEvent ---
                         signal = SignalEvent(
                             timestamp=event.timestamp,
                             symbol=symbol,
                             direction='LONG',
                             stop_price=stop_price,
-                            entry_price=entry_price_ref # Pass reference price
+                            entry_price=entry_price_ref, # Pass reference price
+                            atr_value=atr_value # Pass the calculated ATR
                         )
+                        # --- END MODIFICATION ---
                         self.event_queue.put(signal)
-                        logger.info(f"Generated LONG signal for {symbol} with stop at {stop_price:.2f}")
+                        # --- MODIFICATION: Update log message ---
+                        logger.info(f"Generated LONG signal for {symbol} with stop at {stop_price:.2f} (ATR: {atr_value:.3f if atr_value is not None else 'N/A'})")
+                        # --- END MODIFICATION ---
                     else:
+                         # Log error if stop price is invalid (atr_value might be None here too)
                          logger.error(f"Invalid stop price ({stop_price}) calculated for LONG signal {symbol}. Signal aborted.")
+
                 # else: logger.debug(f"Bullish crossover on {symbol}, but already long ({current_position}). No signal.")
 
-
-            # Bearish Crossover: Short MA crosses below Long MA
+            # Bearish Crossover: Short MA crosses below Long MA (No change needed here for Solution C)
             elif prev_short >= prev_long and latest_short < latest_long:
-                # Exit LONG position if currently held
                 if current_position > 1e-9: # Check if currently long
                     logger.info(f"MOMENTUM [{symbol}]: Bearish Crossover detected. "
                                 f"Short MA({self.short_window})={latest_short:.2f}, Long MA({self.long_window})={latest_long:.2f}. "
                                 f"Exiting long position @ ~{entry_price_ref:.2f}.")
+                    # EXIT signals don't need ATR for sizing
                     signal = SignalEvent(
                         timestamp=event.timestamp,
                         symbol=symbol,
-                        direction='EXIT', # Signal to flatten the position
-                        entry_price=entry_price_ref # Pass reference price
+                        direction='EXIT',
+                        entry_price=entry_price_ref
                     )
                     self.event_queue.put(signal)
                 # else: logger.debug(f"Bearish crossover on {symbol}, but not long ({current_position}). No signal.")
 
+        # --- Existing Exception Handling ---
         except IndexError as e:
-             # This might happen if data length is exactly window size, preventing [-2] access
              logger.debug(f"IndexError during SMA signal calculation for {symbol}, likely boundary condition: {e}")
         except Exception as e:
-            # Catch any other unexpected errors during calculation
             logger.exception(f"Error calculating momentum signals for {symbol}: {e}")

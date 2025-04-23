@@ -1,3 +1,4 @@
+# filename: tracker.py
 # performance/tracker.py (Revised and Completed)
 import logging
 logger = logging.getLogger("TradingSystem") # Use the same name used in setup_logger
@@ -59,6 +60,10 @@ class PerformanceTracker:
 
         self.last_equity_record_date: Optional[datetime.date] = None # Store date object
         self._initial_equity_recorded = False # Flag to record first point
+
+        # --- MODIFICATION START: Add state for target checking ---
+        self.last_target_check_date: Optional[datetime.date] = None
+        # --- MODIFICATION END ---
 
         logger.info(f"PerformanceTracker initialized with Initial Capital: ${self.initial_capital:,.2f}, Risk-Free Rate: {self.risk_free_rate*100:.2f}%")
 
@@ -183,6 +188,82 @@ class PerformanceTracker:
          df.index = pd.to_datetime(df.index, utc=True)
          return df.sort_index()
 
+    # --- MODIFICATION START: Add periodic check against targets ---
+    def check_performance_targets(self, current_date: datetime.date, targets: Dict[str, Any]):
+        """
+        Checks current performance metrics against configured targets periodically.
+        Logs warnings if targets are not met.
+
+        Args:
+            current_date: The current date for checking the interval.
+            targets: A dictionary containing performance target values, e.g.,
+                     {'enable_periodic_check': True, 'check_period_days': 60,
+                      'sharpe_ratio': 1.5, 'max_drawdown_pct': 0.20}
+        """
+        if not targets.get('enable_periodic_check', False):
+            return # Check disabled
+
+        check_period_days = targets.get('check_period_days', 60)
+        if not isinstance(check_period_days, int) or check_period_days <= 0:
+            logger.warning("Invalid check_period_days in performance targets config.")
+            return
+
+        # Check if enough time has passed since the last check
+        if self.last_target_check_date and (current_date - self.last_target_check_date).days < check_period_days:
+            return # Not time yet
+
+        logger.info(f"Performing periodic performance target check for {current_date}...")
+        self.last_target_check_date = current_date # Update last check date
+
+        daily_equity_df = self.get_daily_equity_dataframe()
+        if len(daily_equity_df) < check_period_days + 1: # Need enough data for rolling window
+             logger.info(f"Skipping performance target check: Insufficient daily data ({len(daily_equity_df)} < {check_period_days + 1} days)")
+             return
+
+        # --- Calculate Rolling Metrics ---
+        try:
+            # Use data for the specified check period
+            recent_equity = daily_equity_df['equity'].iloc[-check_period_days:]
+            if len(recent_equity) < 2: return # Need at least 2 points for returns
+
+            daily_returns = recent_equity.pct_change().dropna()
+            if len(daily_returns) < 2: return # Need at least 2 returns for std dev
+
+            # Rolling Sharpe Ratio (Annualized)
+            # Note: This is a simplified Sharpe calculation over the period, not a true rolling Sharpe series
+            mean_daily_return = daily_returns.mean()
+            std_daily_return = daily_returns.std()
+            # Annualize (assuming 252 trading days)
+            annualized_return = mean_daily_return * 252
+            annualized_volatility = std_daily_return * np.sqrt(252)
+            rolling_sharpe = ((annualized_return - self.risk_free_rate) / annualized_volatility) if annualized_volatility > 1e-9 else 0.0
+
+            # Current Drawdown from peak within the check period
+            rolling_max_in_period = recent_equity.cummax()
+            current_drawdown_in_period = (recent_equity.iloc[-1] / rolling_max_in_period.iloc[-1]) - 1.0 if rolling_max_in_period.iloc[-1] > 0 else 0.0
+            # Also consider overall max drawdown from tracker
+            rolling_max_overall = daily_equity_df['equity'].cummax()
+            daily_drawdown_overall = daily_equity_df['equity'] / rolling_max_overall - 1.0
+            current_max_drawdown_overall = daily_drawdown_overall.min()
+
+            # --- Compare against Targets ---
+            target_sharpe = targets.get('sharpe_ratio')
+            if target_sharpe is not None and rolling_sharpe < target_sharpe:
+                logger.warning(f"Performance Target Check ({check_period_days}-day): Sharpe Ratio {rolling_sharpe:.2f} is BELOW target {target_sharpe:.2f}")
+
+            target_max_dd_pct = targets.get('max_drawdown_pct')
+            # Compare against the overall max drawdown experienced so far
+            if target_max_dd_pct is not None and abs(current_max_drawdown_overall) > target_max_dd_pct:
+                 logger.warning(f"Performance Target Check: Overall Max Drawdown {abs(current_max_drawdown_overall)*100:.1f}% EXCEEDS target {target_max_dd_pct*100:.1f}%")
+
+            # Add checks for other targets if defined in config...
+            # e.g., target_alpha = targets.get('annual_return_pct_vs_benchmark')
+
+        except Exception as e:
+            logger.exception(f"Error during periodic performance target check: {e}")
+
+    # --- MODIFICATION END ---
+
     def calculate_metrics(self, benchmark_returns: Optional[pd.Series] = None) -> Dict[str, Any]:
         """
         Calculates comprehensive performance metrics based on recorded equity and trades.
@@ -225,15 +306,18 @@ class PerformanceTracker:
             # CAGR
             years = max(1.0, duration_days) / 365.25 # Avoid division by zero if duration is < 1 day
             cagr = ((end_equity / start_equity) ** (1.0 / years)) - 1 if start_equity > 0 and years > 0 else 0.0
+            metrics['cagr_numeric'] = cagr
             metrics['CAGR %'] = f"{cagr * 100:.2f}%"
 
             # Volatility
             volatility = daily_returns.std() * np.sqrt(252) # Annualized standard deviation
+            metrics['volatility_numeric'] = volatility
             metrics['Annualized Volatility %'] = f"{volatility * 100:.2f}%"
 
             # Sharpe Ratio
             annual_risk_free_rate = self.risk_free_rate
             sharpe = ((cagr - annual_risk_free_rate) / volatility) if volatility > 1e-9 else 0.0
+            metrics['sharpe_numeric'] = sharpe
             metrics[f'Sharpe Ratio (Rf={annual_risk_free_rate*100:.1f}%)'] = f"{sharpe:.3f}"
 
             # Sortino Ratio
@@ -243,12 +327,14 @@ class PerformanceTracker:
             downside_std = np.sqrt(np.mean(np.square(downside_returns_diff[downside_returns_diff < 0]))) if (downside_returns_diff < 0).any() else 0.0
             downside_deviation = downside_std * np.sqrt(252)
             sortino = ((cagr - annual_risk_free_rate) / downside_deviation) if downside_deviation > 1e-9 else 0.0
+            metrics['sortino_numeric'] = sortino
             metrics[f'Sortino Ratio (Rf={annual_risk_free_rate*100:.1f}%)'] = f"{sortino:.3f}"
 
             # Max Drawdown
             rolling_max = daily_equity_df['equity'].cummax()
             daily_drawdown = daily_equity_df['equity'] / rolling_max - 1.0
             max_drawdown = daily_drawdown.min() # This will be negative or zero
+            metrics['max_drawdown_numeric'] = max_drawdown
             metrics['Max Drawdown %'] = f"{max_drawdown * 100:.2f}%"
             try:
                 max_dd_date = daily_drawdown.idxmin()
@@ -258,6 +344,7 @@ class PerformanceTracker:
 
             # Calmar Ratio
             calmar = (cagr / abs(max_drawdown)) if max_drawdown < -1e-9 else 0.0
+            metrics['calmar_numeric'] = calmar
             metrics['Calmar Ratio'] = f"{calmar:.2f}"
 
             # --- Alpha and Beta Calculation (Optional) ---
@@ -272,8 +359,11 @@ class PerformanceTracker:
                 aligned_returns = pd.DataFrame({'strategy': daily_returns, 'benchmark': benchmark_returns})
                 aligned_returns = aligned_returns.dropna() # Drop dates where either is missing
 
-                if len(aligned_returns) > 10: # Need sufficient points for meaningful regression
-                    # Calculate excess returns over daily risk-free rate
+                # --- MODIFICATION START: Change threshold and add logging ---
+                MIN_POINTS_FOR_REGRESSION = 252 # Require ~1 year of daily data
+
+                if len(aligned_returns) > MIN_POINTS_FOR_REGRESSION:
+                    logger.info(f"Calculating Alpha/Beta using {len(aligned_returns)} aligned daily return data points.") # Added log
                     excess_strategy_returns = aligned_returns['strategy'] - daily_risk_free
                     excess_benchmark_returns = aligned_returns['benchmark'] - daily_risk_free
 
@@ -281,9 +371,11 @@ class PerformanceTracker:
                         beta, alpha_daily, r_value, p_value, std_err = stats.linregress(
                             excess_benchmark_returns, excess_strategy_returns
                         )
-                        # Annualize alpha: alpha_annual = alpha_daily * 252 (simpler approximation)
-                        # Or compound: alpha_annual = (1 + alpha_daily)**252 - 1
-                        alpha_annual = alpha_daily * 252 # Simple annualization
+                        # --- MODIFICATION START: Option for Compound Annualization ---
+                        # alpha_annual_simple = alpha_daily * 252
+                        alpha_annual = (1 + alpha_daily)**252 - 1 # Using compound
+                        logger.debug(f"Alpha/Beta Regression: beta={beta:.3f}, alpha_daily={alpha_daily:.6f}, alpha_annual={alpha_annual:.4f}, r^2={r_value**2:.3f}")
+                        # --- MODIFICATION END ---
                         metrics['Beta (vs Benchmark)'] = f"{beta:.3f}"
                         metrics['Alpha (Annualized %)'] = f"{alpha_annual * 100:.2f}%"
                         metrics['Correlation (vs Benchmark)'] = f"{r_value:.3f}"
@@ -295,16 +387,26 @@ class PerformanceTracker:
                          metrics['Correlation (vs Benchmark)'] = 'Error'
                          metrics['R-squared (vs Benchmark)'] = 'Error'
                 else:
-                    logger.warning(f"Not enough overlapping data points ({len(aligned_returns)}) to calculate Alpha/Beta.")
-                    metrics['Beta (vs Benchmark)'] = 'N/A (Data<11)'
-                    metrics['Alpha (Annualized %)'] = 'N/A (Data<11)'
-                    metrics['Correlation (vs Benchmark)'] = 'N/A (Data<11)'
-                    metrics['R-squared (vs Benchmark)'] = 'N/A (Data<11)'
+                    # Updated warning message and N/A reason
+                    logger.warning(f"Not enough overlapping data points ({len(aligned_returns)} <= {MIN_POINTS_FOR_REGRESSION}) to calculate Alpha/Beta.")
+                    metrics['Beta (vs Benchmark)'] = f'N/A (Data<{MIN_POINTS_FOR_REGRESSION+1})'
+                    metrics['Alpha (Annualized %)'] = f'N/A (Data<{MIN_POINTS_FOR_REGRESSION+1})'
+                    metrics['Correlation (vs Benchmark)'] = f'N/A (Data<{MIN_POINTS_FOR_REGRESSION+1})'
+                    metrics['R-squared (vs Benchmark)'] = f'N/A (Data<{MIN_POINTS_FOR_REGRESSION+1})'
+                # --- MODIFICATION END ---
             else:
-                metrics['Beta (vs Benchmark)'] = 'N/A'
-                metrics['Alpha (Annualized %)'] = 'N/A'
-                metrics['Correlation (vs Benchmark)'] = 'N/A'
-                metrics['R-squared (vs Benchmark)'] = 'N/A'
+                 # --- MODIFICATION START: More detailed logging for why Alpha/Beta is skipped ---
+                 reason = ""
+                 if not SCIPY_AVAILABLE: reason = "Scipy not installed"
+                 elif benchmark_returns is None: reason = "No benchmark data provided"
+                 elif benchmark_returns.empty: reason = "Benchmark data is empty"
+                 if reason: logger.info(f"Alpha/Beta calculation skipped: {reason}.")
+                 # --- MODIFICATION END ---
+
+                 metrics['Beta (vs Benchmark)'] = 'N/A'
+                 metrics['Alpha (Annualized %)'] = 'N/A'
+                 metrics['Correlation (vs Benchmark)'] = 'N/A'
+                 metrics['R-squared (vs Benchmark)'] = 'N/A'
 
         # --- Trade Statistics ---
         if not self.trades:
@@ -336,6 +438,7 @@ class PerformanceTracker:
             metrics['Losing Trades'] = num_losing
             metrics['Breakeven Trades'] = num_breakeven
             metrics['Win Rate %'] = f"{win_rate:.2f}%"
+            metrics['profit_factor_numeric'] = profit_factor # Can be float('inf')
             metrics['Profit Factor'] = f"{profit_factor:.2f}" if profit_factor != float('inf') else "Inf"
             metrics['Avg Win $'] = f"${avg_win:.2f}"
             metrics['Avg Loss $'] = f"${avg_loss:.2f}"
