@@ -10,7 +10,7 @@ ibkr:
   client_id: 1           # Unique Client ID for this bot instance
   # !! IMPORTANT !! Replace "DU..." with your ACTUAL Paper Trading Account ID
   # You can find this ID in the top right corner of TWS/Gateway when logged into Paper Trading.
-  account_id: "DUK304361" # Optional but RECOMMENDED: Specify your Paper Trading Account ID
+  account_id: "" # Optional but RECOMMENDED: Specify your Paper Trading Account ID
   # --- Historical Data Rate Limiting ---
   hist_req_limit_count: 59        # Max requests (IB limit is 60, use 59 for safety)
   hist_req_limit_window_sec: 600  # Time window in seconds (IB limit is 10 min = 600s)
