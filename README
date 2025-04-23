@@ -1,0 +1,61 @@
+# Equity Trading System (using IBKR TWS API)
+
+## Description
+
+This project implements an event-driven algorithmic trading system designed to connect to the Interactive Brokers (IBKR) Trader Workstation (TWS) or IB Gateway via the official `ibapi` library. It provides a framework for developing, testing, and deploying automated trading strategies for equities.
+
+The system handles live market data, manages portfolio state (positions, cash), executes orders (including basic bracket orders with stop-losses), tracks performance, and includes a backtesting module using historical CSV data.
+
+## Features
+
+* **Event-Driven Architecture:** Uses a central queue (`queue.Queue`) to decouple components (Data Handler, Strategy, Portfolio Manager, Execution Handler).
+* **IBKR TWS API Integration:** Connects to TWS or IB Gateway using the official `ibapi` library.
+* **Live Data Handling:** Subscribes to and processes 5-second real-time bars from IBKR. Includes contract qualification logic.
+* **Live Portfolio Management:** Tracks current holdings, average costs, cash balances (settled and total), and portfolio value (Net Liquidation Value). Includes basic T+N settlement simulation logic.
+* **Live Order Execution:** Converts strategy signals into market orders and places them via the TWS API. Supports basic bracket orders (MKT entry + STP stop-loss). Includes rate limiting.
+* **Strategy Framework:** Includes a base strategy class and example implementations:
+    * Moving Average Crossover (Momentum)
+    * RSI Mean Reversion
+    * Strategies calculate stop-loss levels based on ATR.
+* **Performance Tracking:** Records equity curve (high-frequency and daily) and individual trades. Calculates standard performance metrics (CAGR, Sharpe, Sortino, Max Drawdown, Win Rate, Profit Factor, etc.). Optionally calculates Alpha/Beta against a benchmark. Saves results to CSV.
+* **Backtesting Module:** Simulates the trading environment using historical OHLCV data from CSV files. Includes simulated execution (slippage, commission) and portfolio management.
+* **Configuration:** System parameters (connection details, account info, trading rules, strategy settings, logging) are managed via a central `config.yaml` file.
+* **Logging:** Implements rotating file logging and console logging using Python's `logging` module.
+
+## Project Structure
+
+
+equity_trading_system/
+├── core/                 # Core components (event queue, events, IB API wrapper)
+│   ├── event_queue.py
+│   ├── events.py
+│   └── ib_wrapper.py
+├── data/                 # Data handling (live connection, historical data loading)
+│   └── ib_handler.py
+├── strategy/             # Trading strategy logic
+│   ├── base.py
+│   ├── momentum.py
+│   └── mean_reversion.py
+├── portfolio/            # Portfolio management (state, risk, order generation)
+│   └── live_manager.py
+├── execution/            # Order execution handling
+│   └── ib_executor.py
+├── performance/          # Performance tracking and metrics calculation
+│   └── tracker.py
+├── backtest/             # Backtesting components
+│   ├── data.py
+│   ├── execution.py
+│   ├── main_loop.py
+│   └── portfolio.py
+├── utils/                # Utility functions (logging, config loading)
+│   ├── logger.py
+│   └── config_loader.py
+├── logs/                 # Directory for log files (created automatically)
+├── results/              # Directory for performance results (created automatically)
+├── main.py               # Main entry point for live trading
+├── config.yaml           # Configuration file
+
+
+## Disclaimer
+
+This software is for educational and informational purposes only. Trading financial instruments involves substantial risk of loss. Past performance is not indicative of future results. The authors and contributors are not responsible for any trading losses incurred using this software. Always test thoroughly with a Paper Trading account before considering live deployment. This is not financial advice.

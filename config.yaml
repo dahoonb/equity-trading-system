@@ -1,0 +1,72 @@
+# config.yaml (Revised - Alerting Removed & Account ID Note Added)
+
+# --- IBKR Connection Settings ---
+# Connects to the NATIVE IB Gateway application running on your macOS machine.
+ibkr:
+  host: 127.0.0.1        # Connect to localhost (where native Gateway runs)
+  live_port: 7496         # Default NATIVE port for LIVE trading Gateway/TWS
+  paper_port: 7497        # Default NATIVE port for PAPER trading Gateway/TWS
+  client_id: 1           # Unique Client ID for this bot instance
+  # !! IMPORTANT !! Replace "DU..." with your ACTUAL Paper Trading Account ID
+  # You can find this ID in the top right corner of TWS/Gateway when logged into Paper Trading.
+  account_id: "DUK304361" # Optional but RECOMMENDED: Specify your Paper Trading Account ID
+
+# --- Account Information ---
+# Used for internal calculations and simulation defaults.
+# Login credentials are NOT stored here; enter them in the native Gateway app.
+account:
+  initial_capital: 100000.0
+  settlement_days: 1 # T+1 Settlement for US Equities (Cash Account Rule)
+
+# --- Trading Parameters ---
+trading:
+  symbols: ['AAPL', 'MSFT', 'GOOG', 'AMZN', 'NVDA', 'META', 'TSLA', 'SPY', 'QQQ', 'IWM']
+  risk_per_trade: 0.01 # Risk 1% of settled cash per trade
+  max_active_positions: 8 # Maximum concurrent positions
+  max_daily_loss_pct: 0.03 # Max % loss of start-of-day equity before halting
+  max_drawdown_pct: 0.15 # Max % drawdown from peak equity before halting
+  atr_stop: # Default ATR settings for BaseStrategy stop-loss
+    atr_period: 14
+    atr_stop_mult: 2.0
+    fallback_stop_pct: 0.05 # 5% fallback if ATR fails
+
+# --- Strategy Configuration ---
+strategies:
+  momentum_ma:
+    enabled: true
+    short_window: 50
+    long_window: 200
+  mean_reversion_rsi:
+    enabled: true
+    rsi_period: 14
+    oversold_threshold: 30
+    exit_threshold: 55
+
+# --- Logging Configuration ---
+logging:
+  log_level: INFO # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_directory: logs
+
+# --- Performance Tracking ---
+performance:
+  risk_free_rate: 0.02 # Annualized risk-free rate for Sharpe/Sortino
+
+# --- Benchmarking ---
+benchmarking:
+  symbol: "SPY" # Symbol for Alpha/Beta calculation
+  calculate_alpha_beta: true
+
+# --- Monitoring ---
+monitoring:
+  check_interval_seconds: 30 # How often to check connection and risk limits
+
+# --- Backtest Configuration (Example - Not used for live trading) ---
+backtest:
+  csv_directory: "data/historical_csv"
+  start_date: "2010-01-01"
+  end_date: "2023-12-31"
+  strategy: "rsi" # Choose 'rsi' or 'ma_cross' for backtest
+  commission_per_share: 0.005
+  min_commission: 1.00
+  slippage_pct: 0.0005 # 0.05% slippage simulation
+  results_directory: "results/backtest_output"
