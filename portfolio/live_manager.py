@@ -267,51 +267,57 @@ class LivePortfolioManager:
 
     def _check_and_set_sync_complete(self):
         """Checks if critical data (NLV, SettledCash) is present and sets the account sync event."""
-        if self._initial_sync_complete.is_set(): return
+        if self._initial_sync_complete.is_set(): return 
 
-        nlv_present = self.account_values.get('NetLiquidation') is not None
-        logger.debug(f"Sync check: NLV present: {nlv_present}") # Simplified log
+        # Check for required values in the self.account_values dictionary, 
+        # ensuring they have been processed by onAccountValue first.
+        nlv = self.account_values.get('NetLiquidation')
+        settled_cash_val = self.account_values.get('SettledCash') 
+        total_cash_val = self.account_values.get('TotalCashValue')
 
-        # --- MODIFICATION: Check ONLY for NLV to set the account sync event ---
-        if nlv_present:
-            logger.info("PortfolioManager: Critical account value (NLV) received. Setting initial account sync complete.")
+        nlv_present = nlv is not None and isinstance(nlv, (float, int)) and nlv >= 0 # Ensure valid NLV
 
-            # --- Adjusted Internal Cash Seeding ---
-            # Since SettledCash callback is unreliable, we can't use it reliably here.
-            # Option 1: Use TotalCashValue as a proxy if available.
-            # Option 2: Log a warning and proceed without initializing internal cash (might cause issues later).
-            # Option 3: Require manual seeding or alternative logic later.
-            # Let's try Option 1 (using TotalCashValue as a fallback):
+        # Determine if a valid cash value is available from the processed updates
+        usable_cash_val = None
+        cash_source = None
+        # Prioritize SettledCash if it's valid
+        if settled_cash_val is not None and isinstance(settled_cash_val, (float, int)):
+            usable_cash_val = settled_cash_val
+            cash_source = "SettledCash"
+        # Use TotalCashValue only as a fallback if SettledCash is specifically missing/None
+        elif settled_cash_val is None and total_cash_val is not None and isinstance(total_cash_val, (float, int)):
+            usable_cash_val = total_cash_val
+            cash_source = "TotalCashValue (proxy)"
+        
+        cash_present = usable_cash_val is not None
+
+        logger.debug(f"Sync check: NLV present: {nlv_present}, Cash present: {cash_present} (Source: {cash_source})")
+
+        # --- REQUIRE BOTH NLV AND a Usable Cash Value ---
+        if nlv_present and cash_present:
+            logger.info(f"PortfolioManager: Critical values received (NLV & {cash_source}). Setting initial account sync complete.")
+
+            # --- Initialize Internal Settled Cash (only once) ---
             if not self._settled_cash_initialized_from_ib:
-                total_cash = self.account_values.get("TotalCashValue")
-                settled_cash_direct = self.settled_cash # Check if direct attribute got set anyway
-
-                seed_value = None
-                source_key = "N/A"
-
-                if settled_cash_direct is not None and isinstance(settled_cash_direct, (float, int)):
-                    seed_value = settled_cash_direct
-                    source_key = "self.settled_cash attribute"
-                elif total_cash is not None and isinstance(total_cash, (float, int)):
-                    seed_value = total_cash
-                    source_key = "TotalCashValue (proxy)"
-
-                if seed_value is not None:
-                    self.settled_cash_internal = seed_value
-                    # Update self.settled_cash too if it wasn't the source
-                    if source_key != "self.settled_cash attribute":
-                         self.settled_cash = seed_value
-                    self._settled_cash_initialized_from_ib = True
-                    logger.info(f"Initialized internal settled cash from IBKR (using {source_key}): ${self.settled_cash_internal:,.2f}")
-                else:
-                    logger.warning("NLV received for sync, but cannot initialize internal settled cash from SettledCash attribute or TotalCashValue.")
-
-            elif self._settled_cash_initialized_from_ib:
-                 logger.debug("Internal settled cash already initialized.")
-            # --- END Adjusted Seeding ---
-
+                self.settled_cash_internal = usable_cash_val # Use the validated cash value
+                self._settled_cash_initialized_from_ib = True
+                # Update the direct attribute self.settled_cash for consistency if not already set
+                if self.settled_cash is None:
+                     self.settled_cash = usable_cash_val
+                logger.info(f"Initialized internal settled cash from IBKR (using {cash_source}): ${self.settled_cash_internal:,.2f}")
+            # elif self._settled_cash_initialized_from_ib: # Optional: Log if already initialized
+            #    logger.debug("Internal settled cash already initialized on subsequent check.")
+            
+            # --- Set the event ONLY when all conditions met ---
             self._initial_sync_complete.set()
-        # --- END MODIFICATION ---
+            
+        # Optional: Log detailed status if still waiting
+        # else:
+        #    if not self._stopping: # Avoid logging during shutdown
+        #        missing = []
+        #        if not nlv_present: missing.append("NetLiquidation")
+        #        if not cash_present: missing.append("SettledCash/TotalCashValue")
+        #        if missing: logger.debug(f"Sync check: Still waiting for: {', '.join(missing)}")
 
     # --- Listener Methods (Called by IBWrapper's dispatch) ---
 

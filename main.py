@@ -1,5 +1,5 @@
 # filename: main.py
-# main.py (Revised: Asynchronous startup using Event Queue)
+# main.py (Revised: Asynchronous startup using Event Queue and Sequential History Loading)
 import sys
 import os
 import platform
@@ -9,6 +9,7 @@ from utils.logger import setup_logger, logger
 
 import time
 import queue
+import concurrent.futures # Add this import
 import signal
 import datetime
 import pandas as pd
@@ -103,6 +104,16 @@ def run_trading_system(ib_wrapper: IBWrapper):
         logger.info(f"Periodic Check Interval: {periodic_check_interval} seconds")
         logger.info(f"Benchmark Symbol: {benchmark_symbol if calculate_benchmark_metrics else 'N/A'}")
 
+        # --- NEW: Load historical data config ---
+        hist_config = config.get('ibkr', {}) # Assuming settings are under ibkr
+        hist_duration_bench = hist_config.get('hist_initial_duration_benchmark', '2 Y')
+        hist_duration_strat = hist_config.get('hist_initial_duration_strategy', '1 Y')
+        hist_barsize = hist_config.get('hist_initial_barsize', '1 day')
+        hist_timeout = hist_config.get('hist_initial_timeout_sec', 120.0)
+        hist_retries = hist_config.get('hist_initial_max_retries', 3)
+        hist_max_workers = hist_config.get('hist_initial_max_concurrent_reqs', 5) # Load max workers
+        logger.info(f"Initial Hist Params: BenchDur='{hist_duration_bench}', StratDur='{hist_duration_strat}', Bar='{hist_barsize}', Timeout={hist_timeout}s, Retries={hist_retries}, MaxWorkers={hist_max_workers}")
+        
         # --- Instantiate Components (without immediate API calls in init) ---
         performance_tracker = PerformanceTracker(initial_capital, risk_free_rate=risk_free_rate)
         # Assumes IBDataHandler __init__ now registers permanent listeners
@@ -114,7 +125,6 @@ def run_trading_system(ib_wrapper: IBWrapper):
 
         strategy_configs = config.get('strategies', {})
         strategy_atr_config = config.get('trading', {}).get('atr_stop', {})
-        # ... (strategy loading logic remains the same) ...
         if strategy_configs.get('momentum_ma', {}).get('enabled', False):
             momentum_config = strategy_configs['momentum_ma']
             strategy_params = {**strategy_atr_config, **momentum_config}; strategy_params.pop('enabled', None)
@@ -128,7 +138,6 @@ def run_trading_system(ib_wrapper: IBWrapper):
         if not strategies: logger.critical("No strategies loaded! Exiting."); raise SystemExit("No strategies")
         logger.info(f"Total strategies loaded: {len(strategies)}")
 
-
         portfolio = LivePortfolioManager(ib_wrapper, data_handler, event_queue, strategies, config, performance_tracker)
 
         # --- Initial Sync (AFTER connection is confirmed) ---
@@ -140,7 +149,6 @@ def run_trading_system(ib_wrapper: IBWrapper):
         # Assumes data_handler now has this non-blocking method
         data_handler.start_async_contract_qualification()
         qualification_started = True
-        # REMOVED: Blocking wait: data_handler.wait_for_contract_qualification(...)
         logger.info("Contract qualification requests sent. Waiting for completion event...")
         # --- END MODIFICATION ---
 
@@ -253,45 +261,172 @@ def run_trading_system(ib_wrapper: IBWrapper):
                                          logger.critical("Portfolio or Executor initial synchronization timed out/failed. Exiting.")
                                          raise SystemExit("Component Sync Failed")
                                     logger.info("Portfolio and Executor initial sync confirmed.")
+                                    
+                                    # ===========================================================
+                                    # *** START PARALLEL HISTORICAL DATA LOADING ***
+                                    # ===========================================================
+                                    logger.info(f"Loading initial historical data in parallel (Max Workers: {hist_max_workers})...")
+                                    initial_hist_results: Dict[str, Optional[pd.DataFrame]] = {}
+                                    symbols_to_load = set()
+                                    request_params = {} # Store params per symbol
 
-                                    # 3. Subscribe to Live Data (Now safe)
+                                    # Determine unique symbols needed and their parameters
+                                    symbols_needed_by_strats = set()
+                                    if hasattr(data_handler, 'contracts'): # Use qualified contracts
+                                        symbols_needed_by_strats = set(data_handler.contracts.keys())
+                                        # Ensure benchmark is included if needed
+                                        if calculate_benchmark_metrics and benchmark_symbol and benchmark_symbol not in symbols_needed_by_strats:
+                                            # Check if benchmark symbol is even qualified
+                                            if benchmark_symbol in data_handler.contracts:
+                                                 symbols_needed_by_strats.add(benchmark_symbol)
+                                            else:
+                                                 logger.warning(f"Benchmark symbol '{benchmark_symbol}' not in qualified contracts. Cannot load benchmark data.")
+                                                 calculate_benchmark_metrics = False # Disable if not qualified
+                                    logger.info(f"Symbols needing initial history: {sorted(list(symbols_needed_by_strats))}")
+
+                                    # Prepare parameters for each symbol
+                                    for symbol in symbols_needed_by_strats:
+                                         # Skip symbols that failed qualification explicitly (redundant if using data_handler.contracts but safe)
+                                         if symbol in event.failed_symbols: # event here refers to the ContractQualificationCompleteEvent
+                                              logger.warning(f"Skipping historical request for unqualified symbol '{symbol}'.")
+                                              continue
+
+                                         is_benchmark = (symbol == benchmark_symbol and calculate_benchmark_metrics)
+                                         duration = hist_duration_bench if is_benchmark else hist_duration_strat
+                                         request_params[symbol] = {
+                                              'symbol': symbol,
+                                              'duration': duration,
+                                              'bar_size': hist_barsize,
+                                              'use_rth': True, # Assuming RTH is desired for daily
+                                              'timeout_per_req': hist_timeout,
+                                              'max_retries': hist_retries
+                                         }
+                                         symbols_to_load.add(symbol) # Add to the set of symbols we'll actually request
+
+                                    # --- Execute requests in parallel ---
+                                    failed_hist_symbols = set()
+                                    if symbols_to_load:
+                                        # Using ThreadPoolExecutor for I/O-bound tasks
+                                        with concurrent.futures.ThreadPoolExecutor(max_workers=hist_max_workers) as executor_hist:
+                                            # Map symbols to future tasks
+                                            future_to_symbol = {
+                                                executor_hist.submit(data_handler.request_historical_data_sync, **params): symbol
+                                                for symbol, params in request_params.items() if symbol in symbols_to_load
+                                            }
+
+                                            logger.info(f"Submitted {len(future_to_symbol)} historical data requests to thread pool.")
+
+                                            # Process completed futures as they finish
+                                            for future in concurrent.futures.as_completed(future_to_symbol):
+                                                symbol = future_to_symbol[future]
+                                                try:
+                                                    # Expect DataFrame on success, None on failure/timeout after retries
+                                                    result_df = future.result()
+                                                    if result_df is not None and not result_df.empty:
+                                                        initial_hist_results[symbol] = result_df
+                                                        logger.info(f"Successfully loaded initial data for '{symbol}'.")
+                                                        # Process benchmark returns immediately
+                                                        if symbol == benchmark_symbol and calculate_benchmark_metrics:
+                                                             if result_df.index.tz is None: result_df.index = result_df.index.tz_localize('UTC')
+                                                             elif result_df.index.tz != datetime.timezone.utc: result_df.index = result_df.index.tz_convert('UTC')
+                                                             benchmark_daily_returns = result_df['close'].pct_change().dropna()
+                                                             if benchmark_daily_returns.empty:
+                                                                  logger.warning(f"Benchmark daily returns for '{symbol}' empty after loading. Disabling Alpha/Beta.")
+                                                                  calculate_benchmark_metrics = False
+                                                             else:
+                                                                  logger.info(f"Processed {len(benchmark_daily_returns)} benchmark returns for '{symbol}'.")
+                                                    # Check for explicit None return, indicating failure after retries
+                                                    elif result_df is None:
+                                                        logger.error(f"Failed to load initial historical data for '{symbol}' (returned None after retries/timeout).")
+                                                        failed_hist_symbols.add(symbol)
+                                                    # Handle empty DataFrame case (might be valid if no data exists, but log as warning)
+                                                    elif result_df is not None and result_df.empty:
+                                                        logger.warning(f"Received empty DataFrame for '{symbol}' after historical data request. Treating as failure for initial load.")
+                                                        failed_hist_symbols.add(symbol)
+
+                                                # Catch exceptions raised *during* the execution of future.result()
+                                                # This typically means an unexpected error within request_historical_data_sync itself
+                                                # (not just a timeout/failure indicated by returning None).
+                                                except Exception as exc:
+                                                    logger.exception(f"Unexpected exception occurred fetching historical data future result for '{symbol}': {exc}")
+                                                    failed_hist_symbols.add(symbol)
+                                    else:
+                                         logger.info("No symbols identified for initial historical data loading.")
+
+                                    # --- REVISED Check for critical failures ---
+                                    if failed_hist_symbols:
+                                        logger.error(f"Failed initial historical data load for: {sorted(list(failed_hist_symbols))}")
+
+                                        # --- CONFIGURABLE FAILURE HANDLING ---
+                                        # Add this to config.yaml under a 'system' key, e.g.:
+                                        # system:
+                                        #   allow_partial_hist_data: true # or false
+                                        allow_partial_data = config.get('system', {}).get('allow_partial_hist_data', False)
+
+                                        # Determine if failure is critical
+                                        is_critical_failure = False
+                                        if calculate_benchmark_metrics and benchmark_symbol in failed_hist_symbols:
+                                            logger.critical(f"CRITICAL FAILURE: Benchmark symbol '{benchmark_symbol}' failed historical data load.")
+                                            is_critical_failure = True
+                                        # Add checks for other symbols absolutely essential for *all* strategies if needed
+
+                                        if is_critical_failure or not allow_partial_data:
+                                            logger.critical("Critical historical data load failure or partial data not allowed by config. Exiting.")
+                                            raise SystemExit("Initial Historical Data Load Failed")
+                                        else:
+                                            logger.warning("Proceeding with partially loaded historical data.")
+                                            # Inform components about failed symbols - they need to handle missing data
+                                            if portfolio and hasattr(portfolio, 'handle_failed_symbols'):
+                                                portfolio.handle_failed_symbols(failed_hist_symbols)
+                                            for strat in strategies:
+                                                if hasattr(strat, 'handle_failed_symbols'):
+                                                     strat.handle_failed_symbols(failed_hist_symbols)
+                                            # Optionally remove symbols from lists if strategies CANNOT handle missing history
+                                            # symbols_to_trade = [s for s in symbols_to_trade if s not in failed_hist_symbols]
+                                            # logger.warning(f"Removed {failed_hist_symbols} from active trading due to hist load failure.")
+                                    else:
+                                        logger.info("All requested initial historical data loaded successfully.")
+                                        # Optional: Pass loaded data to strategies if they need initialization
+                                        # (Ensure strategies check if data exists in initial_hist_results)
+                                        # for symbol, df in initial_hist_results.items():
+                                        #     for strat in strategies:
+                                        #         if symbol in strat.symbols and hasattr(strat, 'initialize_with_data'):
+                                        #              strat.initialize_with_data(df)
+
+                                    # ===========================================================
+                                    # *** END PARALLEL HISTORICAL DATA LOADING ***
+                                    # ===========================================================
+
+                                    # 4. Subscribe to Live Data
                                     logger.info("Subscribing to live market data...")
+                                    # Data handler's internal symbol list should be updated if symbols failed qualification
                                     if not data_handler.subscribe_live_data():
                                         logger.critical("Failed to subscribe to live data after sync. Exiting.")
                                         raise SystemExit("Live Data Subscription Failed")
 
                                     if portfolio: portfolio.update_daily_state(current_event_time) # Set initial daily state
 
-                                    # 4. Load Benchmark Data (Now safe)
-                                    # --- MODIFICATION START: Benchmark loading with enhanced logging ---
-                                    if calculate_benchmark_metrics and benchmark_symbol:
-                                        logger.info(f"Attempting to load benchmark data for '{benchmark_symbol}' via IBDataHandler...")
-                                        try:
-                                            benchmark_df = data_handler.request_historical_data_sync( benchmark_symbol, duration='15 Y', bar_size='1 day', use_rth=True, timeout_per_req=180.0)
-                                            if benchmark_df is not None and not benchmark_df.empty:
-                                                if benchmark_df.index.tz is None: benchmark_df.index = benchmark_df.index.tz_localize('UTC')
-                                                elif benchmark_df.index.tz != datetime.timezone.utc: benchmark_df.index = benchmark_df.index.tz_convert('UTC')
-                                                benchmark_daily_returns = benchmark_df['close'].pct_change().dropna()
-                                                if benchmark_daily_returns.empty:
-                                                    logger.warning(f"Benchmark daily returns for '{benchmark_symbol}' empty. Disabling Alpha/Beta.")
-                                                    calculate_benchmark_metrics = False
-                                                else: logger.info(f"Loaded {len(benchmark_daily_returns)} benchmark returns.")
-                                            else: logger.warning(f"Could not load benchmark data '{benchmark_symbol}'. Disabling Alpha/Beta."); calculate_benchmark_metrics = False
-                                        except Exception as bench_exc: logger.exception(f"Error loading benchmark data for {benchmark_symbol}: {bench_exc}"); calculate_benchmark_metrics = False
-                                    elif calculate_benchmark_metrics and not benchmark_symbol: logger.warning("Benchmark calc enabled, but no symbol. Disabling."); calculate_benchmark_metrics = False
-                                    else: logger.info("Benchmark calc (Alpha/Beta) disabled.")
-                                    # --- MODIFICATION END ---
+                                    # 5. Benchmark Data Processing (already handled above if benchmark was loaded)
+                                    if calculate_benchmark_metrics and benchmark_symbol and benchmark_daily_returns is None:
+                                          # Logged earlier if it failed loading or processing
+                                          pass
+                                    elif not calculate_benchmark_metrics:
+                                          logger.info("Benchmark calculation (Alpha/Beta) is disabled or failed.")
 
                                     # --- System is Ready ---
-                                    system_ready = True
-                                    logger.info("=== System Ready for Trading ===")
+                                    system_ready = True # Set ready even if partial data (if allowed)
+                                    ready_message = "=== System Ready for Trading ==="
+                                    if failed_hist_symbols and allow_partial_data:
+                                        ready_message += " (Note: Proceeding with partial historical data)"
+                                    logger.info(ready_message)
+
 
                                 except Exception as sync_exc:
                                      logger.exception(f"Critical error during post-qualification sync: {sync_exc}")
                                      raise SystemExit(f"Post-Qualification Sync Error: {sync_exc}")
                             else:
                                 logger.warning("Received duplicate ContractQualificationCompleteEvent. Ignoring.")
-                        # --- END MODIFICATION ---
+                        # --- END REVISED BLOCK ---
 
                         # --- Guard other event processing until system is ready ---
                         elif not system_ready:

@@ -1,5 +1,4 @@
-# filename: config.yaml
-# config.yaml (Revised - Alerting Removed & Account ID Note Added)
+# config.yaml
 
 # --- IBKR Connection Settings ---
 # Connects to the NATIVE IB Gateway application running on your macOS machine.
@@ -11,9 +10,15 @@ ibkr:
   # !! IMPORTANT !! Replace "DU..." with your ACTUAL Paper Trading Account ID
   # You can find this ID in the top right corner of TWS/Gateway when logged into Paper Trading.
   account_id: "" # Optional but RECOMMENDED: Specify your Paper Trading Account ID
-  # --- Historical Data Rate Limiting ---
-  hist_req_limit_count: 59        # Max requests (IB limit is 60, use 59 for safety)
-  hist_req_limit_window_sec: 600  # Time window in seconds (IB limit is 10 min = 600s)
+  hist_req_limit_count: 59
+  hist_req_limit_window_sec: 600
+  # --- NEW/UPDATED Historical Data Settings ---
+  hist_initial_duration_benchmark: "2 Y" # Sensible shorter default
+  hist_initial_duration_strategy: "1 Y"  # Sensible shorter default
+  hist_initial_barsize: "1 day"
+  hist_initial_timeout_sec: 300.0         # Timeout per request attempt
+  hist_initial_max_retries: 3             # Retries per request attempt
+  hist_initial_max_concurrent_reqs: 5     # Max parallel requests (BE CAREFUL WITH PACING!)
 
 # --- Account Information ---
 # Used for internal calculations and simulation defaults.
@@ -29,19 +34,12 @@ trading:
   max_active_positions: 8 # Maximum concurrent positions
   max_daily_loss_pct: 0.03 # Max % loss of start-of-day equity before halting
   max_drawdown_pct: 0.15 # Max % drawdown from peak equity before halting
-  apply_volatility_scaling: true # Or false to disable
-  target_volatility_contribution: 0.005 # Target volatility contribution per trade (e.g., 0.5% of price if using ATR % of price) - Adjust based on vol metric used
   atr_stop: # Default ATR settings for BaseStrategy stop-loss
     atr_period: 14
     atr_stop_mult: 2.0
     fallback_stop_pct: 0.05 # 5% fallback if ATR fails
-  # --- ADDED Portfolio Risk Limits ---
-  max_gross_exposure_ratio: 1.5 # Max Gross Exposure / Portfolio Value (e.g., 1.5 = 1.5x leverage proxy)
-  max_sector_allocation_pct: 0.30 # Max allocation to any single sector (e.g., 0.30 = 30%)
-  # --- END ADDED Portfolio Risk Limits ---
 
-# --- ADDED Sector Mapping (EXAMPLE - User needs to provide actual mapping) ---
-# This is just an example structure. You can load this from a separate file too.
+# Add the sector map, ensure all symbols in trading.symbols are included
 sector_map:
   AAPL: "Technology"
   MSFT: "Technology"
@@ -51,9 +49,8 @@ sector_map:
   META: "Communication Services"
   TSLA: "Automobiles"
   SPY: "ETF - Broad Market" # ETFs might need special handling or their own category
-  QQQ: "ETF – NASDAQ 100"
+  QQQ: "ETF - NASDAQ 100"
   IWM: "ETF - Small Cap"
-# --- END ADDED Sector Mapping ---
 
 # --- Strategy Configuration ---
 strategies:
@@ -75,15 +72,6 @@ logging:
 # --- Performance Tracking ---
 performance:
   risk_free_rate: 0.02 # Annualized risk-free rate for Sharpe/Sortino
-  # --- MODIFICATION START: Add performance targets ---
-  targets:
-    enable_periodic_check: true # Set to false to disable periodic checks
-    check_period_days: 60      # How often (in trading days) to check targets
-    sharpe_ratio: 1.5
-    max_drawdown_pct: 0.20 # Target max drawdown (as positive value, e.g., 0.20 for 20%)
-    # Add other targets if desired, e.g.:
-    # annual_return_pct_vs_benchmark: 0.05 # Target 5% alpha
-  # --- MODIFICATION END ---
 
 # --- Benchmarking ---
 benchmarking:
@@ -93,66 +81,23 @@ benchmarking:
 # --- Monitoring ---
 monitoring:
   check_interval_seconds: 30 # How often to check connection and risk limits
-  # --- MODIFICATION START: Add interval for performance target checks ---
-  # Check performance targets less frequently, e.g., daily or less
-  perf_target_check_interval_seconds: 86400 # Check once per day (adjust as needed)
-  # --- MODIFICATION END ---
-  # --- OER Monitoring Configuration ---
-  oer_check_interval_seconds: 3600 # Check OER hourly
-  oer_threshold: 0.02              # Warn if fill rate drops below 2% (1 fill per 50 actions)
-  oer_min_actions: 50              # Minimum actions before checking OER
-  # --- ADDED: Rapid Loss Kill-Switch Config ---
-  rapid_loss_check_window_sec: 60 # Check loss over the last 60 seconds
-  rapid_loss_threshold_pct: 0.01  # Halt if portfolio drops > 1% in the window (adjust as needed)
-  # --- END ADDITION ---
-
-# --- ADDED Volatility Monitoring (VIX) ---
-# Note: Confirm correct symbol/secType/exchange for VIX Index data
-volatility_monitoring:
-  enabled: true
-  symbol: "VIX"         # Symbol for volatility index
-  sec_type: "IND"       # Security type (usually IND for index)
-  exchange: "CBOE"      # Exchange (e.g., CBOE for VIX)
-  currency: "USD"       # Currency
-  threshold_high: 30.0  # VIX level above which new entries are paused
-  threshold_critical: 45.0 # VIX level above which system might halt (optional)
-  pause_entries_on_high: true # Pause new trades if VIX > threshold_high
-# --- END ADDED Volatility Monitoring ---
 
 # --- Backtest Configuration (Example - Not used for live trading) ---
 backtest:
   csv_directory: "data/historical_csv"
-  commission_per_share: 0.005
-  min_commission: 1.00
-  slippage_pct: 0.0005 # 0.05% slippage simulation
-  slippage_model: "volatility_atr" # Or "fixed", "combined"
-  slippage_atr_period: 14 # ATR period for slippage calc (can differ from stop)
-  slippage_vol_factor: 0.1 # e.g., slippage = 0.1 * ATR / Price
-  slippage_base_pct: 0.0001 # Minimum slippage %
-  slippage_max_pct: 0.0050 # Maximum slippage %
-  results_directory: "results/backtest_output"
-
-  # --- Walk-Forward Analysis Configuration ---
-  walk_forward:
-    enabled: true # Set to false to run a single backtest as before
-    # Define periods using pandas DateOffset strings (e.g., 'Y' for years, 'M' for months)
-    # See: https://pandas.pydata.org/pandas-docs/stable/user_guide/timeseries.html#dateoffset-objects
-    in_sample_period: "5Y"    # Length of the optimization window (e.g., 5 years)
-    out_of_sample_period: "1Y" # Length of the forward testing window (e.g., 1 year)
-    optimization_metric: "sharpe_ratio" # Metric to maximize ('sharpe_ratio', 'cagr', 'calmar', 'profit_factor')
-    # Parameter ranges to test during optimization for the selected strategy
-    parameter_ranges:
-      momentum_ma: # Corresponds to strategy_choice if 'ma_cross'
-        short_window: [30, 50, 70]
-        long_window: [150, 200, 250]
-        # Add ranges for atr_period, atr_stop_mult if desired
-      mean_reversion_rsi: # Corresponds to strategy_choice if 'rsi'
-        rsi_period: [10, 14, 20]
-        oversold_threshold: [20, 25, 30]
-        exit_threshold: [50, 55, 60]
-        # Add ranges for atr_period, atr_stop_mult if desired
-  
-  # --- Standard Backtest Settings (Used if walk_forward.enabled is false, or as defaults) ---
   start_date: "2010-01-01"
   end_date: "2023-12-31"
   strategy: "rsi" # Choose 'rsi' or 'ma_cross' for backtest
+  commission_per_share: 0.005
+  min_commission: 1.00
+  slippage_pct: 0.0005 # 0.05% slippage simulation
+  results_directory: "results/backtest_output"
+  
+# --- System Behavior ---
+system:
+  # If true, the system will attempt to continue running even if historical data
+  # fails to load for some (non-critical) symbols during startup.
+  # If false (default), any historical data load failure will halt the system.
+  # Critical failures (e.g., benchmark symbol if required) may still halt the system.
+  allow_partial_hist_data: false # Set to true to allow continuation, false (default) to halt on any failure
+  
