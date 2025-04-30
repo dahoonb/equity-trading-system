@@ -100,13 +100,13 @@ equity_trading_system/
 │   ├── execution.py
 │   ├── main_loop.py
 │   └── portfolio.py
-├── utils/                # Utility functions (logging, config loading)
-│   ├── logger.py
-│   └── config_loader.py
+├── utils/                # Utility functions (logging)
+│   └── logger.py   
 ├── logs/                 # Directory for log files (created automatically)
 ├── results/              # Directory for performance results (created automatically)
-├── main.py               # Main entry point for live trading
+├── config_loader.py      # Configuration loading
 ├── config.yaml           # Configuration file
+├── main.py               # Main entry point for live trading
 ├── requirements.txt      # Environment dependencies
 └── README.md             # This file
 ```
